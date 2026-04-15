@@ -1,0 +1,25 @@
+{
+  "name": "kaivu-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Kaivu scientific agent core in TypeScript.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "example": "node dist/examples/simple-research.js",
+    "example:openai": "node dist/examples/openai-research.js",
+    "example:auth": "node dist/examples/openai-auth.js",
+    "server": "node dist/examples/api-server.js",
+    "smoke": "npm run build && npm run example",
+    "check": "npm run typecheck && npm run smoke"
+  },
+  "devDependencies": {
+    "@openai/codex": "^0.120.0",
+    "@openai/codex-win32-x64": "npm:@openai/codex@^0.120.0-win32-x64",
+    "@types/node": "^24.0.0",
+    "dotenv": "^16.4.5",
+    "typescript": "^5.5.0",
+    "undici": "^7.16.0"
+  }
+}

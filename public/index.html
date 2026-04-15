@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kaivu Research Workbench</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="workbench">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Kaivu Research OS</p>
+          <h1>Scientific Agent Console</h1>
+        </div>
+        <label class="model-picker">
+          Model
+          <select id="modelSelect">
+            <option value="local-echo">Local Echo</option>
+            <option value="openai-codex/gpt-5.4" selected>OpenAI Codex OAuth gpt-5.4</option>
+            <option value="openai-codex/gpt-5.4-mini">OpenAI Codex OAuth gpt-5.4-mini</option>
+            <option value="codex-cli/gpt-5.4">Codex CLI gpt-5.4</option>
+            <option value="codex-cli/gpt-5.4-mini">Codex CLI gpt-5.4-mini</option>
+            <option value="gpt-5-mini">gpt-5-mini</option>
+            <option value="gpt-5">gpt-5</option>
+            <option value="gpt-5-nano">gpt-5-nano</option>
+          </select>
+        </label>
+      </header>
+
+      <section class="chat-shell">
+        <div id="messages" class="messages">
+          <article class="message assistant">
+            <div class="bubble">
+              <strong>Kaivu</strong>
+              <p>
+                Tell me what scientific problem you want to investigate. I will infer the research topic, run the scientific
+                loop, and return evidence, hypotheses, and next actions.
+              </p>
+            </div>
+          </article>
+        </div>
+
+        <form id="chatForm" class="composer">
+          <textarea id="queryInput" rows="3" placeholder="Ask Kaivu to investigate a scientific question..." required></textarea>
+          <div class="composer-actions">
+            <p class="credential-note">OpenAI Codex OAuth reuses your local Codex login; API models still load keys from `.env`.</p>
+            <button id="continueButton" class="continue-button" type="button" hidden disabled>Continue next stage</button>
+            <button id="sendButton" type="submit">Send</button>
+          </div>
+          <div class="stage-fixtures">
+            <span id="fixtureStatus">No saved stage fixture.</span>
+            <button id="saveFixtureButton" type="button" disabled>Save stage fixture</button>
+            <button id="loadFixtureButton" type="button">Load fixture</button>
+            <button id="clearFixtureButton" type="button">Clear fixture</button>
+          </div>
+        </form>
+      </section>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
