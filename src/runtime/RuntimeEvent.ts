@@ -8,6 +8,7 @@ export interface RuntimeEvent {
     | "stage_progress"
     | "tool_call"
     | "stage_started"
+    | "context_pack"
     | "stage_completed"
     | "policy_check"
     | "runtime_error";

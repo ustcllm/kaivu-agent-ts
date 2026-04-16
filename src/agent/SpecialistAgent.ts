@@ -1,3 +1,4 @@
+import type { ContextPack } from "../context/ContextPack.js";
 import type { MemoryRecord } from "../memory/MemoryRecord.js";
 import type { LiteratureKnowledgeBase } from "../literature/LiteratureKnowledgeBase.js";
 import type { ModelProvider, ModelProviderStatusEvent } from "../runtime/ModelProvider.js";
@@ -8,6 +9,8 @@ export interface SpecialistRunInput {
   plan: StagePlan;
   researchState: Record<string, unknown>;
   memoryContext: MemoryRecord[];
+  contextPack?: ContextPack;
+  renderedContext?: string;
   literature?: LiteratureKnowledgeBase;
   model: ModelProvider;
   tools: ToolRegistry;
@@ -32,10 +35,18 @@ export abstract class BaseSpecialistAgent implements SpecialistAgent {
 
   protected async modelSummary(input: SpecialistRunInput, prompt: string): Promise<string> {
     const system = `You are ${this.id}, a stage specialist in a scientific research agent.`;
+    const contextualPrompt = input.renderedContext
+      ? [
+          input.renderedContext,
+          "",
+          "# Current Stage Task",
+          prompt,
+        ].join("\n")
+      : prompt;
     input.onModelPrompt?.({
       specialistId: this.id,
       system,
-      user: prompt,
+      user: contextualPrompt,
     });
     const completion = await input.model.complete(
       [
@@ -43,7 +54,7 @@ export abstract class BaseSpecialistAgent implements SpecialistAgent {
           role: "system",
           content: system,
         },
-        { role: "user", content: prompt },
+        { role: "user", content: contextualPrompt },
       ],
       {
         onStatus: input.onModelStatus,

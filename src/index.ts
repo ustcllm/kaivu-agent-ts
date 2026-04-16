@@ -20,7 +20,15 @@ export { createResearchToolRegistry } from "./runtime/ResearchToolRegistry.js";
 export { evaluateScientificToolCall } from "./runtime/ToolPolicy.js";
 export type * from "./runtime/ToolPolicy.js";
 export { SciMemory } from "./memory/SciMemory.js";
+export { PersistentSciMemory } from "./memory/PersistentSciMemory.js";
 export type * from "./memory/MemoryRecord.js";
+export type * from "./memory/PersistentSciMemory.js";
+export {
+  applyMemoryMigrationDecisions,
+  migrationAuditTag,
+  planMemoryMigrations,
+} from "./memory/MemoryGovernance.js";
+export type * from "./memory/MemoryGovernance.js";
 export { LiteratureKnowledgeBase } from "./literature/LiteratureKnowledgeBase.js";
 export type * from "./literature/LiteratureKnowledgeBase.js";
 export {
@@ -30,8 +38,43 @@ export {
 export type * from "./literature/LiteraturePolicy.js";
 export { ContextPackBuilder } from "./context/ContextPack.js";
 export type * from "./context/ContextPack.js";
+export { ScientificContextCompressor } from "./context/ContextCompressor.js";
+export type * from "./context/ContextCompressor.js";
 export { buildScientificContextPolicy } from "./context/ContextPolicy.js";
 export type * from "./context/ContextPolicy.js";
+export { ScientificEvaluationHarness } from "./evaluation/ScientificEvaluationHarness.js";
+export type * from "./evaluation/ScientificEvaluationHarness.js";
+export { ExperimentExecutionLoop } from "./execution/ExperimentExecutionLoop.js";
+export type * from "./execution/ExperimentExecutionLoop.js";
+export { ExperimentScheduler } from "./execution/ExperimentScheduler.js";
+export type * from "./execution/ExperimentScheduler.js";
+export { ScientificDecisionEngine } from "./decision/ScientificDecisionEngine.js";
+export type * from "./decision/ScientificDecisionEngine.js";
+export { HypothesisTheoryCompiler } from "./hypothesis/HypothesisTheoryCompiler.js";
+export type * from "./hypothesis/HypothesisTheoryCompiler.js";
+export { EvidenceReviewEngine } from "./review/EvidenceReviewEngine.js";
+export type * from "./review/EvidenceReviewEngine.js";
+export { ResearchCampaignPlanner } from "./planning/ResearchCampaignPlanner.js";
+export type * from "./planning/ResearchCampaignPlanner.js";
+export { AutonomousController } from "./control/AutonomousController.js";
+export type * from "./control/AutonomousController.js";
+export { AnomalySurpriseDetector } from "./analysis/AnomalySurpriseDetector.js";
+export type * from "./analysis/AnomalySurpriseDetector.js";
+export { ScientificAssetRegistry } from "./assets/ScientificAssetRegistry.js";
+export type * from "./assets/ScientificAssetRegistry.js";
+export {
+  ScientificLearningEpisodeBuilder,
+  ScientificLearningEpisodeStore,
+  SCIENTIFIC_LEARNING_SCHEMA_VERSION,
+  validateScientificLearningEpisode,
+} from "./learning/ScientificLearningEpisode.js";
+export type * from "./learning/ScientificLearningEpisode.js";
+export { RuntimeManifestBuilder, RuntimeManifestStore } from "./runtime/RuntimeManifest.js";
+export type * from "./runtime/RuntimeManifest.js";
+export { ResearchWorkspaceLayout, WorkspaceBoundary } from "./runtime/WorkspaceBoundary.js";
+export type * from "./runtime/WorkspaceBoundary.js";
+export { ResearchEventLedger, buildLedgerFromTrajectory } from "./loop/ResearchEventLedger.js";
+export type * from "./loop/ResearchEventLedger.js";
 export { ResearchGraphRegistry } from "./graph/ResearchGraph.js";
 export type * from "./graph/ResearchGraph.js";
 export { ScientificCapabilityRegistry, defaultScientificCapabilities } from "./capabilities/ScientificCapabilityRegistry.js";

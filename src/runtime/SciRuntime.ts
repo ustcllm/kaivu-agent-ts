@@ -1,6 +1,8 @@
 import type { SciAgent } from "../agent/SciAgent.js";
 import type { SpecialistAgent } from "../agent/SpecialistAgent.js";
 import { ScientificCapabilityRegistry } from "../capabilities/ScientificCapabilityRegistry.js";
+import { ContextPackBuilder } from "../context/ContextPack.js";
+import type { ResearchGraphRegistry } from "../graph/ResearchGraph.js";
 import type { LiteratureKnowledgeBase } from "../literature/LiteratureKnowledgeBase.js";
 import type { SciMemory } from "../memory/SciMemory.js";
 import { makeId } from "../shared/ids.js";
@@ -27,6 +29,7 @@ export interface RuntimeStageResult {
     model: string;
     tools: Record<string, unknown>;
     prompts: Array<Record<string, unknown>>;
+    contextPack?: Record<string, unknown>;
   };
 }
 
@@ -37,6 +40,8 @@ export class SciRuntime {
     private readonly literature?: LiteratureKnowledgeBase,
     private readonly capabilities = new ScientificCapabilityRegistry(),
     private readonly modelRegistry?: ModelRegistry,
+    private readonly graph?: ResearchGraphRegistry,
+    private readonly contextBuilder = new ContextPackBuilder(),
   ) {}
 
   async runStage(input: RuntimeStageInput): Promise<RuntimeStageResult> {
@@ -55,11 +60,47 @@ export class SciRuntime {
         candidateTools,
       }),
     );
+    const scope = stageScope(input.plan.inputs);
+    const contextPack = await this.contextBuilder.build({
+      query: input.plan.objective,
+      topic: input.agent.discipline,
+      stage: input.plan.stage,
+      memory: input.memory,
+      literature: this.literature,
+      graph: this.graph,
+      userId: scope.userId,
+      projectId: scope.projectId,
+      groupId: scope.groupId,
+    });
     const memoryContext = await input.memory.recall({
       query: input.plan.objective,
       scopes: ["instruction", "project", "group", "personal", "public", "agent", "session"],
-      limit: 8,
+      limit: contextPack.policy.budget.maxMemoryRecords + contextPack.policy.budget.maxFailedAttemptRecords,
+      userId: scope.userId,
+      projectId: scope.projectId,
+      groupId: scope.groupId,
+      includeNeedsReview: true,
     });
+    publish(
+      this.event("context_pack", input.plan.stage, {
+        specialistId: input.specialist.id,
+        packId: contextPack.id,
+        estimatedTokens: contextPack.estimatedTokens,
+        targetTokens: contextPack.policy.budget.targetTokens,
+        hardCapTokens: contextPack.policy.budget.hardCapTokens,
+        budgetExceeded: contextPack.budgetExceeded,
+        counts: {
+          memory: contextPack.memoryItems.length,
+          failedAttempts: contextPack.failedAttemptItems.length,
+          literature: contextPack.literatureItems.length,
+          graph: contextPack.graphItems.length,
+          omitted: contextPack.omittedItems.length,
+        },
+        requiredPacks: contextPack.policy.requiredPacks,
+        optionalPacks: contextPack.policy.optionalPacks,
+        exclusions: contextPack.exclusions,
+      }),
+    );
     const model = this.modelRegistry?.resolveProvider(input.agent.id, input.plan.stage) ?? this.model;
     publish(
       this.event("model_call", input.plan.stage, {
@@ -67,12 +108,15 @@ export class SciRuntime {
         model: model.label ?? "model",
         objective: input.plan.objective,
         memoryContextCount: memoryContext.length,
+        contextPackId: contextPack.id,
       }),
     );
     const stageResult = await input.specialist.run({
       plan: input.plan,
       researchState: input.researchState,
       memoryContext,
+      contextPack,
+      renderedContext: contextPack.renderPromptContext(Math.floor(contextPack.policy.budget.targetTokens * 4)),
       literature: this.literature,
       model,
       tools: this.tools,
@@ -136,6 +180,18 @@ export class SciRuntime {
         model: model.label ?? "model",
         tools: candidateTools,
         prompts,
+        contextPack: {
+          id: contextPack.id,
+          estimatedTokens: contextPack.estimatedTokens,
+          budgetExceeded: contextPack.budgetExceeded,
+          counts: {
+            memory: contextPack.memoryItems.length,
+            failedAttempts: contextPack.failedAttemptItems.length,
+            literature: contextPack.literatureItems.length,
+            graph: contextPack.graphItems.length,
+            omitted: contextPack.omittedItems.length,
+          },
+        },
       },
     };
   }
@@ -174,4 +230,18 @@ export class SciRuntime {
       payload,
     };
   }
+}
+
+function stageScope(inputs: Record<string, unknown>): { userId?: string; projectId?: string; groupId?: string } {
+  const task = typeof inputs.task === "object" && inputs.task !== null ? inputs.task as { constraints?: Record<string, unknown> } : {};
+  const constraints = task.constraints ?? {};
+  return {
+    userId: stringOrUndefined(inputs.userId ?? constraints.userId),
+    projectId: stringOrUndefined(inputs.projectId ?? constraints.projectId),
+    groupId: stringOrUndefined(inputs.groupId ?? constraints.groupId),
+  };
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }

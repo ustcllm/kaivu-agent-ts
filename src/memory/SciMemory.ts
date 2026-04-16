@@ -50,8 +50,13 @@ const STATUS_WEIGHTS: Record<MemoryStatus, number> = {
 };
 
 export class SciMemory {
-  private readonly records: MemoryRecord[] = [];
-  private readonly log: MemoryLogEntry[] = [];
+  private readonly records: MemoryRecord[];
+  private readonly log: MemoryLogEntry[];
+
+  constructor(initialRecords: MemoryRecord[] = [], initialLog: MemoryLogEntry[] = []) {
+    this.records = initialRecords.map(cloneMemoryRecord);
+    this.log = initialLog.map((entry) => ({ ...entry, metadata: { ...entry.metadata } }));
+  }
 
   async recall(input: MemoryRecallInput): Promise<MemoryRecord[]> {
     const terms = termsOf(input.query);
@@ -197,7 +202,7 @@ export class SciMemory {
   }
 
   snapshot(): MemoryRecord[] {
-    return this.records.map((record) => ({ ...record, tags: [...record.tags] }));
+    return this.records.map(cloneMemoryRecord);
   }
 
   logSnapshot(): MemoryLogEntry[] {
@@ -299,4 +304,16 @@ function defaultPromotion(scope: MemoryScope): PromotionStatus {
 
 function termsOf(text: string): string[] {
   return text.toLowerCase().split(/[^a-z0-9\u4e00-\u9fff]+/u).filter(Boolean);
+}
+
+function cloneMemoryRecord(record: MemoryRecord): MemoryRecord {
+  return {
+    ...record,
+    tags: [...record.tags],
+    sourceRefs: [...record.sourceRefs],
+    supersedes: [...record.supersedes],
+    derivedFrom: [...record.derivedFrom],
+    conflictsWith: [...record.conflictsWith],
+    validatedBy: [...record.validatedBy],
+  };
 }

@@ -37,11 +37,16 @@ export class SciAgent {
 
   buildStagePlan(task: ScientificTask, stage: ScientificStage, researchState: Record<string, unknown>): StagePlan {
     const specialist = this.specialistFor(stage);
+    const discipline = task.discipline ?? this.discipline;
     return {
       stage,
       specialistId: specialist.id,
-      objective: `${stage}: advance "${task.title}" for ${this.discipline}. Question: ${task.question}`,
-      inputs: { task, discipline: this.discipline, researchState },
+      objective: `${stage}: advance "${task.title}" for ${discipline}. Question: ${task.question}`,
+      inputs: {
+        task,
+        discipline,
+        researchState,
+      },
       expectedOutputs: this.expectedOutputs(stage),
       requiredCapabilities: this.requiredCapabilities(stage),
       stopHints: ["stop if this stage has enough evidence to support a next-stage decision"],

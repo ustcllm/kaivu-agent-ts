@@ -1,5 +1,12 @@
 import { makeId } from "../../shared/ids.js";
 import type { ScientificTask, StageResult } from "../../shared/types.js";
+import {
+  parseStructuredOutput,
+  repairInstruction,
+  salvageStructuredOutput,
+  schemaInstruction,
+  type StructuredSchema,
+} from "../../structured/StructuredOutput.js";
 import { BaseSpecialistAgent, type SpecialistRunInput } from "../SpecialistAgent.js";
 
 export class ProblemFramingAgent extends BaseSpecialistAgent {
@@ -9,14 +16,14 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
 
   async run(input: SpecialistRunInput): Promise<StageResult> {
     const task = input.plan.inputs.task as ScientificTask;
-    const discipline = String(input.plan.inputs.discipline ?? task.discipline ?? "general_science");
+    const disciplineHint = String(input.plan.inputs.discipline ?? task.discipline ?? "to_be_determined");
     const groundingPlan = planQueryGrounding(task.question);
     input.onProgress?.({
       label: "Interpret user query",
       detail: "Identified technical terms and ambiguity that may need grounding before problem framing.",
       data: {
         rawQuestion: task.question,
-        discipline,
+        disciplineHint,
         candidateTerms: groundingPlan.terms,
         needsGrounding: groundingPlan.needsGrounding,
         requireHostedWebSearch: groundingPlan.requireHostedWebSearch,
@@ -26,20 +33,15 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
     const groundingResults = await groundQueryConcepts(input, groundingPlan);
     const languagePolicy = detectLanguagePolicy(task.question);
     const framingPrompt = [
-      `Frame this scientific research problem for ${discipline}.`,
+      "Frame this scientific research problem.",
       `Question: ${task.question}`,
+      `Initial discipline hint: ${disciplineHint}. If the hint is "to_be_determined", infer the discipline from the grounded problem.`,
+      "The returned discipline is the official downstream discipline label for literature review, hypothesis generation, and experiment planning.",
+      "Use one discipline label from: artificial_intelligence, mathematics, chemistry, chemical_engineering, physics, general_science, unknown.",
       groundingResults.length > 0
         ? `Concept grounding context:\n${groundingResults.map(formatGroundingResultForPrompt).join("\n")}`
         : "Concept grounding context: no external grounding results were available; explicitly mark uncertain terminology as assumptions.",
-      "Return concise Markdown using this exact schema:",
-      "## Objective",
-      "## Scope",
-      "## Key Variables",
-      "## Constraints",
-      "## Success Criteria",
-      "## Immediate Literature Queries",
-      "- purpose: search query",
-      "The Immediate Literature Queries section is required because the next stage will use it directly.",
+      schemaInstruction(PROBLEM_FRAME_SCHEMA),
       "All Immediate Literature Queries MUST be written in English, even if the user's query is Chinese or mixed-language.",
       "Each Immediate Literature Query MUST be a concrete database-ready search string, not a goal, instruction, or vague description.",
       "Use exact technical terms, aliases, mechanism words, method names, benchmark names, and quoted phrases when useful.",
@@ -54,8 +56,10 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
       "- literature review for the research query",
       `Search language policy: ${languagePolicy.reason}`,
     ].join("\n");
-    const summary = await this.modelSummary(input, framingPrompt);
-    const extractedQueries = extractImmediateLiteratureQueries(summary, languagePolicy);
+    const rawSummary = await this.modelSummary(input, framingPrompt);
+    const parsedFrame = await parseOrRepairProblemFrame(input, rawSummary);
+    const framedDiscipline = parsedFrame.discipline || "unknown";
+    const extractedQueries = normalizeStructuredLiteratureQueries(parsedFrame.immediate_literature_queries, languagePolicy);
     const rejectedQueries = extractedQueries.rejected;
     const searchQueries = extractedQueries.accepted;
     const hasRequiredSearchQueries = searchQueries.length > 0;
@@ -66,6 +70,7 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
           "literature review has explicit search targets",
           "later hypotheses can be evaluated against stated evidence criteria",
         ];
+    const summary = renderProblemFrameMarkdown(parsedFrame, searchQueries, rejectedQueries);
 
     return {
       stage: this.stage,
@@ -76,12 +81,13 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
           label: "Interpret and ground user query",
           status: groundingPlan.needsGrounding ? "completed" : "skipped",
           detail: groundingPlan.needsGrounding
-            ? "Identified technical terms and attempted lightweight grounding before asking the model to frame the problem."
+            ? "Identified technical terms and ran concept grounding before asking the model to frame the problem."
             : "No obvious unfamiliar technical term was detected, so no grounding search was required.",
           data: {
             title: task.title,
             rawQuestion: task.question,
-            discipline,
+            disciplineHint,
+            framedDiscipline,
             taskType: task.taskType ?? "chat_research",
             candidateTerms: groundingPlan.terms,
             requireHostedWebSearch: groundingPlan.requireHostedWebSearch,
@@ -116,7 +122,7 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
       evidence: [
         {
           id: makeId("evidence-problem-framing"),
-          claim: `Research question framed for ${discipline}: ${task.question}`,
+          claim: `Research question framed for ${framedDiscipline}: ${task.question}`,
           source: this.id,
           strength: "unknown",
           uncertainty: "framing is an initial interpretation and should be revised if literature contradicts it",
@@ -129,12 +135,14 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
           kind: "problem_frame",
           uri: "memory://problem_frame",
           metadata: {
-            discipline,
+            discipline: framedDiscipline,
+            disciplineHint,
             languagePolicy,
             groundingTerms: groundingPlan.terms,
             groundingResults,
             searchQueries,
             rejectedQueries,
+            structuredFrame: parsedFrame,
             querySource: "model_immediate_literature_queries",
             successCriteria,
             schemaSatisfied: hasRequiredSearchQueries,
@@ -148,14 +156,14 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
           title: "Problem framing",
           summary: summary.slice(0, 220),
           content: summary,
-          tags: ["problem-framing", discipline],
+          tags: ["problem-framing", framedDiscipline],
         },
       ],
       graphProposals: [
         {
           subject: task.id,
           predicate: "framed_as",
-          object: discipline,
+          object: framedDiscipline,
           evidenceIds: [],
         },
       ],
@@ -177,6 +185,22 @@ interface SearchQueryPlan {
   purpose: string;
 }
 
+interface ProblemFrameQuery {
+  purpose: string;
+  query: string;
+}
+
+interface ProblemFrame {
+  discipline: string;
+  objective: string;
+  scope: string;
+  key_variables: string[];
+  constraints: string[];
+  success_criteria: string[];
+  immediate_literature_queries: ProblemFrameQuery[];
+  ambiguities: string[];
+}
+
 interface ExtractedSearchQueries {
   accepted: SearchQueryPlan[];
   rejected: Array<{ query: string; reason: string }>;
@@ -193,6 +217,170 @@ interface GroundingPlan {
   needsGrounding: boolean;
   reason: string;
   requireHostedWebSearch: boolean;
+}
+
+const PROBLEM_FRAME_SCHEMA: StructuredSchema = {
+  name: "problem_frame",
+  description: "A structured scientific problem frame for downstream literature review and hypothesis generation.",
+  schema: {
+    type: "object",
+    required: [
+      "discipline",
+      "objective",
+      "scope",
+      "key_variables",
+      "constraints",
+      "success_criteria",
+      "immediate_literature_queries",
+      "ambiguities",
+    ],
+    properties: {
+      discipline: {
+        type: "string",
+        description: "Official downstream discipline label: artificial_intelligence, mathematics, chemistry, chemical_engineering, physics, general_science, or unknown.",
+      },
+      objective: { type: "string" },
+      scope: { type: "string" },
+      key_variables: { type: "array", items: { type: "string" } },
+      constraints: { type: "array", items: { type: "string" } },
+      success_criteria: { type: "array", items: { type: "string" } },
+      immediate_literature_queries: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["purpose", "query"],
+          properties: {
+            purpose: { type: "string" },
+            query: { type: "string" },
+          },
+        },
+      },
+      ambiguities: { type: "array", items: { type: "string" } },
+    },
+  },
+};
+
+async function parseOrRepairProblemFrame(input: SpecialistRunInput, rawText: string): Promise<ProblemFrame> {
+  try {
+    return coerceProblemFrame(parseStructuredOutput(rawText, PROBLEM_FRAME_SCHEMA));
+  } catch (error) {
+    try {
+      return coerceProblemFrame(salvageStructuredOutput(rawText, PROBLEM_FRAME_SCHEMA));
+    } catch {
+      const repairPrompt = repairInstruction(
+        PROBLEM_FRAME_SCHEMA,
+        rawText,
+        error instanceof Error ? error.message : String(error),
+      );
+      const repaired = await input.model.complete(
+        [
+          {
+            role: "system",
+            content: "You repair invalid structured scientific agent outputs into valid JSON.",
+          },
+          { role: "user", content: repairPrompt },
+        ],
+        {
+          onStatus: input.onModelStatus,
+          onTextDelta: input.onModelDelta,
+        },
+      );
+      try {
+        return coerceProblemFrame(parseStructuredOutput(repaired.text, PROBLEM_FRAME_SCHEMA));
+      } catch {
+        const task = input.plan.inputs.task as ScientificTask | undefined;
+        return fallbackProblemFrame(rawText, task?.question ?? input.plan.objective);
+      }
+    }
+  }
+}
+
+function fallbackProblemFrame(rawText: string, question: string): ProblemFrame {
+  const seed = extractCandidateTechnicalTerms(question)[0] || question.split(/\s+/).filter((token) => token.length > 3).slice(0, 4).join(" ");
+  return {
+    discipline: "unknown",
+    objective: question || "Frame the scientific research problem.",
+    scope: "Fallback frame derived from unstructured model output; requires review before downstream use.",
+    key_variables: seed ? [seed] : [],
+    constraints: ["Structured problem framing failed and should be reviewed."],
+    success_criteria: [
+      "question is narrowed into a testable research objective",
+      "literature review has explicit search targets",
+      "later hypotheses can be evaluated against stated evidence criteria",
+    ],
+    immediate_literature_queries: seed
+      ? [
+          {
+            purpose: "fallback search",
+            query: `${seed} scientific literature`,
+          },
+        ]
+      : [],
+    ambiguities: [rawText.slice(0, 240)],
+  };
+}
+
+function coerceProblemFrame(value: Record<string, unknown>): ProblemFrame {
+  return {
+    discipline: normalizeDisciplineLabel(asString(value.discipline)),
+    objective: asString(value.objective),
+    scope: asString(value.scope),
+    key_variables: asStringArray(value.key_variables),
+    constraints: asStringArray(value.constraints),
+    success_criteria: asStringArray(value.success_criteria),
+    immediate_literature_queries: Array.isArray(value.immediate_literature_queries)
+      ? value.immediate_literature_queries.map((item) => {
+          const record = typeof item === "object" && item !== null ? item as Record<string, unknown> : {};
+          return {
+            purpose: asString(record.purpose),
+            query: asString(record.query),
+          };
+        })
+      : [],
+    ambiguities: asStringArray(value.ambiguities),
+  };
+}
+
+function renderProblemFrameMarkdown(
+  frame: ProblemFrame,
+  acceptedQueries: SearchQueryPlan[],
+  rejectedQueries: Array<{ query: string; reason: string }>,
+): string {
+  const lines = [
+    "## Discipline",
+    frame.discipline || "unknown",
+    "",
+    "## Objective",
+    frame.objective || "No objective returned.",
+    "",
+    "## Scope",
+    frame.scope || "No scope returned.",
+    "",
+    "## Key Variables",
+    ...renderList(frame.key_variables),
+    "",
+    "## Constraints",
+    ...renderList(frame.constraints),
+    "",
+    "## Success Criteria",
+    ...renderList(frame.success_criteria),
+    "",
+    "## Immediate Literature Queries",
+    ...(acceptedQueries.length
+      ? acceptedQueries.map((item) => `- ${item.purpose}: ${item.query}`)
+      : ["- No valid English database-ready queries returned."]),
+  ];
+  if (rejectedQueries.length > 0) {
+    lines.push("", "## Rejected Literature Queries", ...rejectedQueries.map((item) => `- ${item.query}: ${item.reason}`));
+  }
+  if (frame.ambiguities.length > 0) {
+    lines.push("", "## Ambiguities", ...renderList(frame.ambiguities));
+  }
+  return lines.join("\n");
+}
+
+function renderList(items: string[]): string[] {
+  return items.length > 0 ? items.map((item) => `- ${item}`) : ["- none"];
 }
 
 interface GroundingResult {
@@ -452,9 +640,20 @@ function formatGroundingResultForPrompt(result: GroundingResult): string {
 
 function extractImmediateLiteratureQueries(summary: string, languagePolicy: LanguagePolicy): ExtractedSearchQueries {
   const sectionLines = extractLiteratureQuerySection(summary);
+  return normalizeQueryLines(sectionLines, languagePolicy);
+}
+
+function normalizeStructuredLiteratureQueries(queries: ProblemFrameQuery[], languagePolicy: LanguagePolicy): ExtractedSearchQueries {
+  return normalizeQueryLines(
+    queries.map((item) => `${item.purpose || "framed literature query"}: ${item.query}`),
+    languagePolicy,
+  );
+}
+
+function normalizeQueryLines(lines: string[], languagePolicy: LanguagePolicy): ExtractedSearchQueries {
   const accepted: SearchQueryPlan[] = [];
   const rejected: Array<{ query: string; reason: string }> = [];
-  for (const line of sectionLines) {
+  for (const line of lines) {
     const normalized = normalizeQueryLine(line, languagePolicy);
     if (!normalized) continue;
     if (containsCjk(normalized.query)) {
@@ -530,6 +729,29 @@ function normalizeQueryLine(line: string, languagePolicy: LanguagePolicy): Searc
 
 function containsCjk(text: string): boolean {
   return /[\u3400-\u9fff\uf900-\ufaff]/u.test(text);
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : String(value ?? "").trim();
+}
+
+function normalizeDisciplineLabel(value: string): string {
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const allowed = new Set([
+    "artificial_intelligence",
+    "mathematics",
+    "chemistry",
+    "chemical_engineering",
+    "physics",
+    "general_science",
+    "unknown",
+  ]);
+  return allowed.has(normalized) ? normalized : "unknown";
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(asString).filter(Boolean);
 }
 
 function queryQualityRejectionReason(query: string): string | undefined {

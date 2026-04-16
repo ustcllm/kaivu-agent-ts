@@ -129,10 +129,10 @@ export class KaivuApiServer {
     const literature = new LiteratureKnowledgeBase();
     const graph = new ResearchGraphRegistry();
     const memory = new SciMemory();
-    const runtime = new SciRuntime(model, createResearchToolRegistry(literature), literature, new ScientificCapabilityRegistry());
+    const runtime = new SciRuntime(model, createResearchToolRegistry(literature), literature, new ScientificCapabilityRegistry(), undefined, graph);
     const agent = new SciAgent({
       id: "chief_scientific_agent",
-      discipline: body.discipline ?? task.discipline ?? inferDiscipline(task.question),
+      discipline: task.discipline ?? "to_be_determined",
       specialists: [
         new ProblemFramingAgent(),
         new LiteratureReviewAgent(),
@@ -325,6 +325,7 @@ function trajectoryEventDetails(event: TrajectoryEvent): Record<string, unknown>
         model: runtime.model,
         tools: summarizeRuntimeTools(runtime.tools),
         prompts: summarizePrompts(runtime.prompts),
+        contextPack: runtime.contextPack,
       }),
       review: payload.review,
     };
@@ -413,6 +414,26 @@ function summarizeRuntimeEvent(value: unknown): Record<string, unknown> {
       output: "waiting for model response",
       runtime: {
         model: payload.model,
+      },
+    });
+  }
+  if (event.type === "context_pack") {
+    return pickDefined({
+      event: "context pack",
+      stage: event.stage,
+      input: {
+        specialist: payload.specialistId,
+      },
+      output: {
+        packId: payload.packId,
+        counts: payload.counts,
+        requiredPacks: payload.requiredPacks,
+        optionalPacks: payload.optionalPacks,
+      },
+      runtime: {
+        estimatedTokens: payload.estimatedTokens,
+        targetTokens: payload.targetTokens,
+        budgetExceeded: payload.budgetExceeded,
       },
     });
   }
@@ -661,17 +682,6 @@ function taskFromQuery(query: string): ScientificTask {
     id: `web_task_${Date.now()}`,
     title: question.slice(0, 80) || "Untitled research task",
     question,
-    discipline: inferDiscipline(question),
     taskType: "chat_research",
   };
-}
-
-function inferDiscipline(query: string): string {
-  const lowered = query.toLowerCase();
-  if (/(kaggle|benchmark|dataset|training|model|neural|llm|ai|machine learning)/.test(lowered)) return "artificial_intelligence";
-  if (/(reaction|catalyst|synthesis|molecule|polymer|spectra|yield)/.test(lowered)) return "chemistry";
-  if (/(process|reactor|distillation|mass transfer|heat transfer|chemical engineering)/.test(lowered)) return "chemical_engineering";
-  if (/(proof|theorem|lemma|conjecture|counterexample|topology|algebra)/.test(lowered)) return "mathematics";
-  if (/(quantum|particle|field|simulation|material|phase transition|physics)/.test(lowered)) return "physics";
-  return "general_science";
 }

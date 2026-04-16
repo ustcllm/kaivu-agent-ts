@@ -46,6 +46,9 @@ export interface ScientificTask {
   question: string;
   discipline?: string;
   taskType?: string;
+  secondaryDisciplines?: string[];
+  methodDomains?: string[];
+  experimentalMode?: string;
   constraints?: Record<string, unknown>;
   successCriteria?: string[];
 }
