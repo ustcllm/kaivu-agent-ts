@@ -310,22 +310,25 @@ function trajectoryEventDetails(event: TrajectoryEvent): Record<string, unknown>
   if (event.type === "stage_output") {
     const input = typeof payload.input === "object" && payload.input !== null ? payload.input as Record<string, unknown> : {};
     const output = typeof payload.output === "object" && payload.output !== null ? payload.output as Record<string, unknown> : {};
+    const exchange = typeof output.exchange === "object" && output.exchange !== null ? output.exchange as Record<string, unknown> : output;
     const runtime = typeof payload.runtime === "object" && payload.runtime !== null ? payload.runtime as Record<string, unknown> : {};
+    const observability = typeof payload.observability === "object" && payload.observability !== null ? payload.observability as Record<string, unknown> : {};
     return {
       input: pickDefined(input),
       output: pickDefined({
-        summary: output.summary,
-        process: output.process,
-        evidence: summarizeEvidence(output.evidence),
-        hypotheses: summarizeHypotheses(output.hypotheses),
-        artifacts: summarizeArtifacts(output.artifacts),
-        decision: output.decision,
+        summary: exchange.summary,
+        evidence: summarizeEvidence(exchange.evidence),
+        hypotheses: summarizeHypotheses(exchange.hypotheses),
+        artifacts: summarizeArtifacts(exchange.artifacts),
+        decision: exchange.decision,
       }),
       runtime: pickDefined({
         model: runtime.model,
         tools: summarizeRuntimeTools(runtime.tools),
-        prompts: summarizePrompts(runtime.prompts),
         contextPack: runtime.contextPack,
+      }),
+      observability: pickDefined({
+        processTraceCount: Array.isArray(observability.processTrace) ? observability.processTrace.length : undefined,
       }),
       review: payload.review,
     };

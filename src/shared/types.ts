@@ -135,11 +135,25 @@ export interface StageResult {
   stage: ScientificStage;
   specialistId: string;
   summary: string;
+  /**
+   * Observability-only trace for UI, debugging, replay, and evaluation.
+   * This should not be treated as agent-to-agent scientific exchange data.
+   */
   processTrace?: StageTraceItem[];
   evidence: EvidenceItem[];
   hypotheses: HypothesisItem[];
   artifacts: ArtifactRef[];
   memoryProposals: MemoryWriteProposal[];
   graphProposals: GraphWriteProposal[];
+  decision: ScientificDecision;
+}
+
+export interface StageExchangeView {
+  stage: ScientificStage;
+  specialistId: string;
+  summary: string;
+  evidence: EvidenceItem[];
+  hypotheses: HypothesisItem[];
+  artifacts: ArtifactRef[];
   decision: ScientificDecision;
 }

@@ -31,6 +31,7 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
       },
     });
     const groundingResults = await groundQueryConcepts(input, groundingPlan);
+    const groundingContext = buildGroundingContext(groundingResults);
     const languagePolicy = detectLanguagePolicy(task.question);
     const framingPrompt = [
       "Frame this scientific research problem.",
@@ -38,33 +39,35 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
       `Initial discipline hint: ${disciplineHint}. If the hint is "to_be_determined", infer the discipline from the grounded problem.`,
       "The returned discipline is the official downstream discipline label for literature review, hypothesis generation, and experiment planning.",
       "Use one discipline label from: artificial_intelligence, mathematics, chemistry, chemical_engineering, physics, general_science, unknown.",
-      groundingResults.length > 0
-        ? `Concept grounding context:\n${groundingResults.map(formatGroundingResultForPrompt).join("\n")}`
-        : "Concept grounding context: no external grounding results were available; explicitly mark uncertain terminology as assumptions.",
+      groundingContext
+        ? `Concept grounding context:\n${groundingContext}`
+        : "Concept grounding context: no grounded context is available; explicitly mark uncertain terminology as assumptions.",
       schemaInstruction(PROBLEM_FRAME_SCHEMA),
       "All Immediate Literature Queries MUST be written in English, even if the user's query is Chinese or mixed-language.",
       "Each Immediate Literature Query MUST be a concrete database-ready search string, not a goal, instruction, or vague description.",
       "Use exact technical terms, aliases, mechanism words, method names, benchmark names, and quoted phrases when useful.",
       "Return 5-8 queries when possible.",
       "Good examples:",
-      '- term grounding: "attention residuals" transformer residual stream',
-      '- mechanism: "attention residuals" depth-wise attention transformer layers',
-      '- baseline comparison: "residual connections" transformer attention sublayer prenorm',
+      '- term grounding: "exact technical phrase" domain method',
+      '- mechanism: "specific mechanism name" model architecture evaluation',
+      '- baseline comparison: "method A" "method B" benchmark limitation',
       "Bad examples:",
       "- find papers about this topic",
-      "- understand attention residual",
+      "- understand this concept",
       "- literature review for the research query",
       `Search language policy: ${languagePolicy.reason}`,
     ].join("\n");
-    const rawSummary = await this.modelSummary(input, framingPrompt);
+    const rawSummary = await this.modelSummary(input, framingPrompt, { includeRenderedContext: false });
     const parsedFrame = await parseOrRepairProblemFrame(input, rawSummary);
     const framedDiscipline = parsedFrame.discipline || "unknown";
     const extractedQueries = normalizeStructuredLiteratureQueries(parsedFrame.immediate_literature_queries, languagePolicy);
     const rejectedQueries = extractedQueries.rejected;
     const searchQueries = extractedQueries.accepted;
     const hasRequiredSearchQueries = searchQueries.length > 0;
-    const successCriteria = task.successCriteria?.length
-      ? task.successCriteria
+    const successCriteria = parsedFrame.success_criteria.length
+      ? parsedFrame.success_criteria
+      : task.successCriteria?.length
+        ? task.successCriteria
       : [
           "question is narrowed into a testable research objective",
           "literature review has explicit search targets",
@@ -91,7 +94,7 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
             taskType: task.taskType ?? "chat_research",
             candidateTerms: groundingPlan.terms,
             requireHostedWebSearch: groundingPlan.requireHostedWebSearch,
-            groundingResults,
+            groundingContext,
           },
         },
         {
@@ -136,14 +139,9 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
           uri: "memory://problem_frame",
           metadata: {
             discipline: framedDiscipline,
-            disciplineHint,
             languagePolicy,
-            groundingTerms: groundingPlan.terms,
-            groundingResults,
             searchQueries,
-            rejectedQueries,
             structuredFrame: parsedFrame,
-            querySource: "model_immediate_literature_queries",
             successCriteria,
             schemaSatisfied: hasRequiredSearchQueries,
           },
@@ -154,7 +152,7 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
           scope: "project",
           kind: "decision",
           title: "Problem framing",
-          summary: summary.slice(0, 220),
+          summary: parsedFrame.memory_summary || summarizeProblemFrameForMemory(parsedFrame),
           content: summary,
           tags: ["problem-framing", framedDiscipline],
         },
@@ -192,6 +190,7 @@ interface ProblemFrameQuery {
 
 interface ProblemFrame {
   discipline: string;
+  memory_summary: string;
   objective: string;
   scope: string;
   key_variables: string[];
@@ -226,6 +225,7 @@ const PROBLEM_FRAME_SCHEMA: StructuredSchema = {
     type: "object",
     required: [
       "discipline",
+      "memory_summary",
       "objective",
       "scope",
       "key_variables",
@@ -238,6 +238,10 @@ const PROBLEM_FRAME_SCHEMA: StructuredSchema = {
       discipline: {
         type: "string",
         description: "Official downstream discipline label: artificial_intelligence, mathematics, chemistry, chemical_engineering, physics, general_science, or unknown.",
+      },
+      memory_summary: {
+        type: "string",
+        description: "A concise semantic memory summary of the framed research task for future recall. Do not include markdown headings.",
       },
       objective: { type: "string" },
       scope: { type: "string" },
@@ -299,6 +303,7 @@ function fallbackProblemFrame(rawText: string, question: string): ProblemFrame {
   const seed = extractCandidateTechnicalTerms(question)[0] || question.split(/\s+/).filter((token) => token.length > 3).slice(0, 4).join(" ");
   return {
     discipline: "unknown",
+    memory_summary: question || "Fallback problem framing requires review.",
     objective: question || "Frame the scientific research problem.",
     scope: "Fallback frame derived from unstructured model output; requires review before downstream use.",
     key_variables: seed ? [seed] : [],
@@ -323,6 +328,7 @@ function fallbackProblemFrame(rawText: string, question: string): ProblemFrame {
 function coerceProblemFrame(value: Record<string, unknown>): ProblemFrame {
   return {
     discipline: normalizeDisciplineLabel(asString(value.discipline)),
+    memory_summary: asString(value.memory_summary),
     objective: asString(value.objective),
     scope: asString(value.scope),
     key_variables: asStringArray(value.key_variables),
@@ -379,6 +385,15 @@ function renderProblemFrameMarkdown(
   return lines.join("\n");
 }
 
+function summarizeProblemFrameForMemory(frame: ProblemFrame): string {
+  const parts = [
+    frame.objective,
+    frame.scope,
+    frame.success_criteria.length ? `Success criteria: ${frame.success_criteria.join("; ")}` : "",
+  ].filter(Boolean);
+  return parts.join(" ").slice(0, 320) || "Problem framing created a research task frame.";
+}
+
 function renderList(items: string[]): string[] {
   return items.length > 0 ? items.map((item) => `- ${item}`) : ["- none"];
 }
@@ -407,69 +422,38 @@ function planQueryGrounding(question: string): GroundingPlan {
 async function groundQueryConcepts(input: SpecialistRunInput, plan: GroundingPlan): Promise<GroundingResult[]> {
   if (!plan.needsGrounding) return [];
   const task = input.plan.inputs.task as ScientificTask;
-  const tools = ["query_literature_wiki", "openai_hosted_web_search"];
   const results: GroundingResult[] = [];
   for (const term of plan.terms) {
     input.onProgress?.({
       label: "Ground technical term",
-      detail: `Checking whether "${term}" needs external context before framing.`,
+      detail: `Grounding "${term}" with hosted web search before framing.`,
       data: {
         term,
-        tools,
+        tool: "openai_hosted_web_search",
       },
     });
-    for (const tool of tools) {
-      const result = tool === "openai_hosted_web_search"
-        ? await callHostedWebSearch(input, term, task.question)
-        : await input.tools.call({
-            name: tool,
-            arguments: {
-              query: term,
-              purpose: "problem_framing_concept_grounding",
-              limit: 3,
-            },
-          });
-      input.onProgress?.({
-        label: groundingProgressLabel(tool),
-        detail: groundingProgressDetail(tool, term, result.status),
-        data: {
-          term,
-          tool,
-          status: result.status,
-          resultCount: groundingResultCount(result.output),
-          topResults: groundingTopResults(result.output),
-          note: groundingProgressNote(result.output, result.error),
-          summary: summarizeGroundingOutput(result.output, result.error),
-        },
-      });
-      results.push({
+    const result = await callHostedWebSearch(input, term, task.question);
+    input.onProgress?.({
+      label: "Search web with model",
+      detail: `Used hosted web search to ground "${term}": ${result.status}.`,
+      data: {
         term,
-        tool,
+        tool: "openai_hosted_web_search",
         status: result.status,
+        resultCount: groundingResultCount(result.output),
+        topResults: groundingTopResults(result.output),
+        note: groundingProgressNote(result.output, result.error),
         summary: summarizeGroundingOutput(result.output, result.error),
-      });
-      if (
-        tool !== "query_literature_wiki" &&
-        result.status === "completed" &&
-        groundingOutputIsUseful(result.output)
-      ) {
-        break;
-      }
-    }
+      },
+    });
+    results.push({
+      term,
+      tool: "openai_hosted_web_search",
+      status: result.status,
+      summary: summarizeGroundingOutput(result.output, result.error),
+    });
   }
   return results;
-}
-
-function groundingProgressLabel(tool: string): string {
-  if (tool === "query_literature_wiki") return "Search local literature wiki";
-  if (tool === "openai_hosted_web_search") return "Search web with model";
-  return `Run ${tool}`;
-}
-
-function groundingProgressDetail(tool: string, term: string, status: string): string {
-  if (tool === "query_literature_wiki") return `Looked for "${term}" in the local literature wiki: ${status}.`;
-  if (tool === "openai_hosted_web_search") return `Used OpenAI hosted web_search to ground "${term}": ${status}.`;
-  return `Used ${tool} for "${term}": ${status}.`;
 }
 
 async function callHostedWebSearch(input: SpecialistRunInput, term: string, originalQuestion: string) {
@@ -495,8 +479,8 @@ async function callHostedWebSearch(input: SpecialistRunInput, term: string, orig
     `Term or phrase to ground exactly: "${term}"`,
     "",
     "Search and reason with the exact phrase first. Then check close variants only if the exact phrase is not established.",
-    "Do not silently conflate the phrase with a broader nearby concept such as residual connections, residual attention, or attention residual learning.",
-    "If the exact phrase is not a standardized term, say that explicitly and explain the most plausible interpretations separately.",
+    "Do not silently conflate the exact phrase with broader nearby concepts. Name each distinct meaning separately.",
+    "If the exact phrase is not standardized, say that explicitly and explain the most plausible interpretations separately.",
     "",
     "Return concise Markdown using this schema:",
     "## Exact Term Status",
@@ -634,8 +618,28 @@ function groundingOutputIsUseful(output: unknown): boolean {
   return true;
 }
 
-function formatGroundingResultForPrompt(result: GroundingResult): string {
-  return `- ${result.term} via ${result.tool}: ${result.status}; ${result.summary}`;
+function buildGroundingContext(results: GroundingResult[]): string {
+  const usefulResults = results.filter((result) => result.status === "completed" && groundingSummaryIsUseful(result.summary));
+  if (usefulResults.length === 0) return "";
+  const byTerm = new Map<string, GroundingResult[]>();
+  for (const result of usefulResults) {
+    byTerm.set(result.term, [...(byTerm.get(result.term) ?? []), result]);
+  }
+  return [...byTerm.entries()]
+    .map(([term, termResults]) => {
+      const summary = termResults
+        .map((result) => result.summary)
+        .filter(groundingSummaryIsUseful)
+        .join("\n\n")
+        .trim();
+      return `Term: ${term}\nGrounded summary:\n${summary}`;
+    })
+    .filter((item) => item.trim())
+    .join("\n\n");
+}
+
+function groundingSummaryIsUseful(summary: string): boolean {
+  return Boolean(summary.trim()) && !/no matching|not connected|unavailable|not supported|failed/i.test(summary);
 }
 
 function extractImmediateLiteratureQueries(summary: string, languagePolicy: LanguagePolicy): ExtractedSearchQueries {

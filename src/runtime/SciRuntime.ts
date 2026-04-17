@@ -166,7 +166,6 @@ export class SciRuntime {
       this.event("stage_completed", input.plan.stage, {
         specialistId: input.specialist.id,
         summary: stageResult.summary,
-        processTrace: stageResult.processTrace ?? [],
         decision: stageResult.decision,
         evidenceCount: stageResult.evidence.length,
         hypothesisCount: stageResult.hypotheses.length,

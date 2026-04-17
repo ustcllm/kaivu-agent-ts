@@ -53,7 +53,7 @@ export class ScientificCapabilityRegistry {
 
 export function defaultScientificCapabilities(): ScientificCapabilitySpec[] {
   return [
-    capability("concept_grounding", "Clarify unfamiliar scientific terms before framing a research problem.", ["query_literature_wiki", "openai_hosted_web_search"], "problem_framing_pack", ["general_science", "artificial_intelligence", "chemistry", "physics", "mathematics"]),
+    capability("concept_grounding", "Clarify unfamiliar scientific terms before framing a research problem.", ["openai_hosted_web_search"], "problem_framing_pack", ["general_science", "artificial_intelligence", "chemistry", "physics", "mathematics"]),
     capability("literature_search", "Retrieve scientific sources for claims, methods, and conflicts.", ["arxiv_search", "crossref_search", "pubmed_search"], "literature_review_pack", ["general_science", "artificial_intelligence", "chemistry", "physics", "mathematics"]),
     capability("citation_resolution", "Resolve DOI/PMID/URL metadata into stable citation records.", ["resolve_citation"], "literature_review_pack", ["general_science"]),
     capability("literature_wiki_query", "Search the persistent literature wiki before raw retrieval.", ["query_literature_wiki"], "literature_review_pack", ["general_science"]),

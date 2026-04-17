@@ -33,9 +33,9 @@ export abstract class BaseSpecialistAgent implements SpecialistAgent {
   abstract description: string;
   abstract run(input: SpecialistRunInput): Promise<StageResult>;
 
-  protected async modelSummary(input: SpecialistRunInput, prompt: string): Promise<string> {
+  protected async modelSummary(input: SpecialistRunInput, prompt: string, options: { includeRenderedContext?: boolean } = {}): Promise<string> {
     const system = `You are ${this.id}, a stage specialist in a scientific research agent.`;
-    const contextualPrompt = input.renderedContext
+    const contextualPrompt = options.includeRenderedContext !== false && input.renderedContext
       ? [
           input.renderedContext,
           "",

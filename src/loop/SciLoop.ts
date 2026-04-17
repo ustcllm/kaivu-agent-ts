@@ -3,7 +3,7 @@ import type { ResearchGraphRegistry } from "../graph/ResearchGraph.js";
 import type { SciMemory } from "../memory/SciMemory.js";
 import type { SciRuntime } from "../runtime/SciRuntime.js";
 import type { ResearchMode, ScientificTask } from "../shared/types.js";
-import { applyStageResult, createInitialResearchState, type ResearchState } from "./ResearchState.js";
+import { applyStageResult, buildAgentResearchStateView, createInitialResearchState, createStageExchangeView, type ResearchState } from "./ResearchState.js";
 import { ResearchTrajectory, type TrajectoryEvent } from "./Trajectory.js";
 
 export interface ResearchRunInput {
@@ -37,7 +37,8 @@ export class SciLoop {
     while (!state.done && iterationsThisRun < maxIterations) {
       const stage = state.currentStage;
       this.emit(input, trajectory.recordLoopDecision(stage, `Selected stage ${stage} at iteration ${state.iteration}.`));
-      const plan = input.agent.buildStagePlan(input.task, stage, { ...state });
+      const agentResearchState = buildAgentResearchStateView(state);
+      const plan = input.agent.buildStagePlan(state.task, stage, agentResearchState);
       this.emit(
         input,
         trajectory.record("stage_plan", {
@@ -53,7 +54,7 @@ export class SciLoop {
         agent: input.agent,
         specialist,
         plan,
-        researchState: { ...state },
+        researchState: agentResearchState,
         memory: this.memory,
         onEvent: (event) => {
           this.emit(input, trajectory.recordRuntimeEvents([event]));
@@ -70,14 +71,12 @@ export class SciLoop {
             previousHypothesisCount: state.hypotheses.length,
           },
           output: {
-            summary: runtimeResult.stageResult.summary,
-            process: runtimeResult.stageResult.processTrace ?? [],
-            evidence: runtimeResult.stageResult.evidence,
-            hypotheses: runtimeResult.stageResult.hypotheses,
-            artifacts: runtimeResult.stageResult.artifacts,
-            decision: runtimeResult.stageResult.decision,
+            exchange: createStageExchangeView(runtimeResult.stageResult),
           },
-          runtime: runtimeResult.runtime,
+          observability: {
+            processTrace: runtimeResult.stageResult.processTrace ?? [],
+          },
+          runtime: summarizeRuntimeForStageOutput(runtimeResult.runtime),
           review: input.pauseAfterStage
             ? {
                 required: true,
@@ -164,4 +163,12 @@ export class SciLoop {
   private emit(input: ResearchRunInput, event: TrajectoryEvent): void {
     input.onEvent?.(event);
   }
+}
+
+function summarizeRuntimeForStageOutput(runtime: { model: string; tools: Record<string, unknown>; contextPack?: Record<string, unknown> }): Record<string, unknown> {
+  return {
+    model: runtime.model,
+    tools: runtime.tools,
+    contextPack: runtime.contextPack,
+  };
 }
