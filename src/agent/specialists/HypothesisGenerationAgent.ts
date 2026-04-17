@@ -1,5 +1,5 @@
 import { makeId } from "../../shared/ids.js";
-import type { StageResult } from "../../shared/types.js";
+import type { ResearchState, StageResult } from "../../shared/types.js";
 import {
   parseStructuredOutput,
   repairInstruction,
@@ -7,7 +7,7 @@ import {
   schemaInstruction,
   type StructuredSchema,
 } from "../../structured/StructuredOutput.js";
-import { BaseSpecialistAgent, type SpecialistRunInput } from "../SpecialistAgent.js";
+import { BaseSpecialistAgent, type ModelStepRunner, type SpecialistRunInput } from "../SpecialistAgent.js";
 
 interface HypothesisTheoryObject {
   name: string;
@@ -116,7 +116,7 @@ export class HypothesisGenerationAgent extends BaseSpecialistAgent {
       "Prefer 2-4 hypotheses. Avoid vague one-line hypotheses.",
       "",
       "Current research state:",
-      JSON.stringify(compactResearchState(input.researchState), null, 2),
+      renderResearchStateForHypothesisPrompt(input.researchState),
       "",
       schemaInstruction(HYPOTHESIS_GENERATION_SCHEMA),
     ].join("\n");
@@ -125,19 +125,18 @@ export class HypothesisGenerationAgent extends BaseSpecialistAgent {
       label: "Build hypothesis prompt",
       detail: "Prepared structured theory-object schema using current evidence and literature state.",
       data: {
-        previousEvidenceCount: Array.isArray((input.researchState as { evidence?: unknown[] }).evidence)
-          ? (input.researchState as { evidence: unknown[] }).evidence.length
-          : 0,
-        previousHypothesisCount: Array.isArray((input.researchState as { hypotheses?: unknown[] }).hypotheses)
-          ? (input.researchState as { hypotheses: unknown[] }).hypotheses.length
-          : 0,
+        previousEvidenceCount: input.researchState.evidence.length,
+        previousHypothesisCount: input.researchState.hypotheses.length,
       },
     });
 
-    const raw = await this.modelSummary(input, prompt);
-    const frame = await parseOrRepairHypothesisFrame(input, raw);
+    const raw = await this.modelStep(input, {
+      prompt,
+    });
+    const modelStep = (options: Parameters<ModelStepRunner>[0]) => this.modelStep(input, options);
+    const frame = await parseOrRepairHypothesisFrame(raw, modelStep);
     const theoryObjects = normalizeTheoryObjects(frame.hypotheses);
-    const summary = renderHypothesisMarkdown(frame, theoryObjects);
+    const summary = this.renderResultMarkdown({ frame, theoryObjects });
 
     input.onProgress?.({
       label: "Compile theory objects",
@@ -148,7 +147,6 @@ export class HypothesisGenerationAgent extends BaseSpecialistAgent {
         missingFieldCounts: countMissingFields(theoryObjects),
       },
     });
-
     return {
       stage: this.stage,
       specialistId: this.id,
@@ -224,9 +222,60 @@ export class HypothesisGenerationAgent extends BaseSpecialistAgent {
       },
     };
   }
+
+  protected override renderResultMarkdown(result: unknown): string {
+    if (!isRecord(result)) return super.renderResultMarkdown(result);
+    const frame = isHypothesisGenerationFrame(result.frame) ? result.frame : fallbackHypothesisFrame("");
+    const theoryObjects = Array.isArray(result.theoryObjects)
+      ? result.theoryObjects.filter(isHypothesisTheoryObject)
+      : normalizeTheoryObjects(frame.hypotheses);
+    const lines = [
+      "## Synthesis Basis",
+      frame.synthesis_basis || "No synthesis basis returned.",
+      "",
+      "## Candidate Hypotheses",
+    ];
+    for (const item of theoryObjects) {
+      lines.push(
+        `### ${item.name}`,
+        item.statement,
+        "",
+        `- Theory family: ${item.theory_family || "unknown"}`,
+        `- Mechanism chain: ${item.mechanism_chain.join(" -> ") || "missing"}`,
+        `- Boundary conditions: ${item.boundary_conditions.join("; ") || "missing"}`,
+        `- Measurable variables: ${item.measurable_variables.join("; ") || "missing"}`,
+        "",
+        "Predictions:",
+        ...renderList(item.predictions),
+        "",
+        "Counterfactual predictions:",
+        ...renderList(item.counterfactual_predictions),
+        "",
+        "Falsification tests:",
+        ...renderList(item.falsification_tests),
+        "",
+        "Rival explanations:",
+        ...renderList(item.rival_explanations),
+        "",
+        "Missing theory fields:",
+        ...renderList(item.missing_theory_fields),
+        "",
+      );
+    }
+    if (frame.hypothesis_relations.length > 0) {
+      lines.push("## Hypothesis Relations");
+      for (const relation of frame.hypothesis_relations) {
+        lines.push(`- ${relation.source_name} ${relation.relation} ${relation.target_name}: ${relation.rationale}`);
+      }
+    }
+    if (frame.decision_notes.length > 0) {
+      lines.push("", "## Decision Notes", ...renderList(frame.decision_notes));
+    }
+    return lines.join("\n");
+  }
 }
 
-async function parseOrRepairHypothesisFrame(input: SpecialistRunInput, rawText: string): Promise<HypothesisGenerationFrame> {
+async function parseOrRepairHypothesisFrame(rawText: string, modelStep: ModelStepRunner): Promise<HypothesisGenerationFrame> {
   try {
     return coerceHypothesisFrame(parseStructuredOutput(rawText, HYPOTHESIS_GENERATION_SCHEMA));
   } catch (error) {
@@ -234,27 +283,18 @@ async function parseOrRepairHypothesisFrame(input: SpecialistRunInput, rawText: 
       return coerceHypothesisFrame(salvageStructuredOutput(rawText, HYPOTHESIS_GENERATION_SCHEMA));
     } catch {
       try {
-        const repaired = await input.model.complete(
-          [
-            {
-              role: "system",
-              content: "You repair invalid structured scientific agent outputs into valid JSON.",
-            },
-            {
-              role: "user",
-              content: repairInstruction(
-                HYPOTHESIS_GENERATION_SCHEMA,
-                rawText,
-                error instanceof Error ? error.message : String(error),
-              ),
-            },
-          ],
-          {
-            onStatus: input.onModelStatus,
-            onTextDelta: input.onModelDelta,
-          },
-        );
-        return coerceHypothesisFrame(parseStructuredOutput(repaired.text, HYPOTHESIS_GENERATION_SCHEMA));
+        const repaired = await modelStep({
+          stepId: "hypothesis_generation_repair_model",
+          system: "You repair invalid structured scientific agent outputs into valid JSON.",
+          prompt: repairInstruction(
+            HYPOTHESIS_GENERATION_SCHEMA,
+            rawText,
+            error instanceof Error ? error.message : String(error),
+          ),
+          includeRenderedContext: false,
+          stream: false,
+        });
+        return coerceHypothesisFrame(parseStructuredOutput(repaired, HYPOTHESIS_GENERATION_SCHEMA));
       } catch {
         return fallbackHypothesisFrame(rawText);
       }
@@ -302,6 +342,26 @@ function coerceTheoryObject(value: Record<string, unknown>): HypothesisTheoryObj
   };
 }
 
+function isHypothesisGenerationFrame(value: unknown): value is HypothesisGenerationFrame {
+  return (
+    isRecord(value) &&
+    typeof value.synthesis_basis === "string" &&
+    Array.isArray(value.hypotheses) &&
+    Array.isArray(value.hypothesis_relations) &&
+    Array.isArray(value.decision_notes)
+  );
+}
+
+function isHypothesisTheoryObject(value: unknown): value is HypothesisTheoryObject {
+  return (
+    isRecord(value) &&
+    typeof value.name === "string" &&
+    typeof value.statement === "string" &&
+    Array.isArray(value.predictions) &&
+    Array.isArray(value.falsification_tests)
+  );
+}
+
 function normalizeTheoryObjects(items: HypothesisTheoryObject[]): HypothesisTheoryObject[] {
   return items
     .filter((item) => item.statement || item.name)
@@ -320,52 +380,6 @@ function normalizeTheoryObjects(items: HypothesisTheoryObject[]): HypothesisTheo
       };
     })
     .slice(0, 6);
-}
-
-function renderHypothesisMarkdown(frame: HypothesisGenerationFrame, theoryObjects: HypothesisTheoryObject[]): string {
-  const lines = [
-    "## Synthesis Basis",
-    frame.synthesis_basis || "No synthesis basis returned.",
-    "",
-    "## Candidate Hypotheses",
-  ];
-  for (const item of theoryObjects) {
-    lines.push(
-      `### ${item.name}`,
-      item.statement,
-      "",
-      `- Theory family: ${item.theory_family || "unknown"}`,
-      `- Mechanism chain: ${item.mechanism_chain.join(" -> ") || "missing"}`,
-      `- Boundary conditions: ${item.boundary_conditions.join("; ") || "missing"}`,
-      `- Measurable variables: ${item.measurable_variables.join("; ") || "missing"}`,
-      "",
-      "Predictions:",
-      ...renderList(item.predictions),
-      "",
-      "Counterfactual predictions:",
-      ...renderList(item.counterfactual_predictions),
-      "",
-      "Falsification tests:",
-      ...renderList(item.falsification_tests),
-      "",
-      "Rival explanations:",
-      ...renderList(item.rival_explanations),
-      "",
-      "Missing theory fields:",
-      ...renderList(item.missing_theory_fields),
-      "",
-    );
-  }
-  if (frame.hypothesis_relations.length > 0) {
-    lines.push("## Hypothesis Relations");
-    for (const relation of frame.hypothesis_relations) {
-      lines.push(`- ${relation.source_name} ${relation.relation} ${relation.target_name}: ${relation.rationale}`);
-    }
-  }
-  if (frame.decision_notes.length > 0) {
-    lines.push("", "## Decision Notes", ...renderList(frame.decision_notes));
-  }
-  return lines.join("\n");
 }
 
 function fallbackHypothesisFrame(rawText: string): HypothesisGenerationFrame {
@@ -394,15 +408,19 @@ function fallbackHypothesisFrame(rawText: string): HypothesisGenerationFrame {
   };
 }
 
-function compactResearchState(value: Record<string, unknown>): Record<string, unknown> {
-  return {
-    currentStage: value.currentStage,
-    completedStages: value.completedStages,
-    evidence: Array.isArray(value.evidence) ? value.evidence.slice(-10) : [],
-    hypotheses: Array.isArray(value.hypotheses) ? value.hypotheses.slice(-8) : [],
-    artifactRefs: Array.isArray(value.artifactRefs) ? value.artifactRefs.slice(-8) : [],
-    blockers: Array.isArray(value.blockers) ? value.blockers : [],
-  };
+function renderResearchStateForHypothesisPrompt(state: ResearchState): string {
+  return JSON.stringify(
+    {
+      currentStage: state.currentStage,
+      completedStages: state.completedStages,
+      evidence: state.evidence.slice(-10),
+      hypotheses: state.hypotheses.slice(-8),
+      artifactRefs: state.artifactRefs.slice(-8),
+      blockers: state.blockers,
+    },
+    null,
+    2,
+  );
 }
 
 function countMissingFields(items: HypothesisTheoryObject[]): Record<string, number> {

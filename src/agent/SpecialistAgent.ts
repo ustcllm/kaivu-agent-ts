@@ -1,13 +1,13 @@
 import type { ContextPack } from "../context/ContextPack.js";
 import type { MemoryRecord } from "../memory/MemoryRecord.js";
 import type { LiteratureKnowledgeBase } from "../literature/LiteratureKnowledgeBase.js";
-import type { ModelProvider, ModelProviderStatusEvent } from "../runtime/ModelProvider.js";
+import type { ModelCompleteOptions, ModelProvider, ModelProviderStatusEvent } from "../runtime/ModelProvider.js";
 import type { ToolRegistry } from "../runtime/ToolRegistry.js";
-import type { ScientificStage, StagePlan, StageResult } from "../shared/types.js";
+import type { ResearchState, ScientificStage, StagePlan, StageResult } from "../shared/types.js";
 
 export interface SpecialistRunInput {
   plan: StagePlan;
-  researchState: Record<string, unknown>;
+  researchState: ResearchState;
   memoryContext: MemoryRecord[];
   contextPack?: ContextPack;
   renderedContext?: string;
@@ -27,27 +27,57 @@ export interface SpecialistAgent {
   run(input: SpecialistRunInput): Promise<StageResult>;
 }
 
+export interface ModelStepOptions {
+  stepId?: string;
+  system?: string;
+  prompt: string;
+  includeRenderedContext?: boolean;
+  stream?: boolean;
+  hostedWebSearch?: boolean;
+  webSearchDomains?: string[];
+  maxOutputTokens?: number;
+}
+
+export type ModelStepRunner = (options: ModelStepOptions) => Promise<string>;
+
 export abstract class BaseSpecialistAgent implements SpecialistAgent {
   abstract id: string;
   abstract stage: ScientificStage;
   abstract description: string;
   abstract run(input: SpecialistRunInput): Promise<StageResult>;
 
-  protected async modelSummary(input: SpecialistRunInput, prompt: string, options: { includeRenderedContext?: boolean } = {}): Promise<string> {
-    const system = `You are ${this.id}, a stage specialist in a scientific research agent.`;
+  protected renderResultMarkdown(result: unknown): string {
+    if (typeof result === "string") return result.trim();
+    if (Array.isArray(result)) return result.map((item) => this.renderResultMarkdown(item)).filter(Boolean).join("\n\n");
+    if (result && typeof result === "object") return JSON.stringify(result, null, 2);
+    return String(result ?? "").trim();
+  }
+
+  protected async modelStep(
+    input: SpecialistRunInput,
+    options: ModelStepOptions,
+  ): Promise<string> {
+    const system = options.system ?? `You are ${this.id}, a stage specialist in a scientific research agent.`;
     const contextualPrompt = options.includeRenderedContext !== false && input.renderedContext
       ? [
           input.renderedContext,
           "",
           "# Current Stage Task",
-          prompt,
+          options.prompt,
         ].join("\n")
-      : prompt;
+      : options.prompt;
     input.onModelPrompt?.({
-      specialistId: this.id,
+      specialistId: options.stepId ?? this.id,
       system,
       user: contextualPrompt,
     });
+    const completeOptions: ModelCompleteOptions = {
+      onStatus: input.onModelStatus,
+      onTextDelta: options.stream === false ? undefined : input.onModelDelta,
+      hostedWebSearch: options.hostedWebSearch,
+      webSearchDomains: options.webSearchDomains,
+      maxOutputTokens: options.maxOutputTokens,
+    };
     const completion = await input.model.complete(
       [
         {
@@ -56,11 +86,9 @@ export abstract class BaseSpecialistAgent implements SpecialistAgent {
         },
         { role: "user", content: contextualPrompt },
       ],
-      {
-        onStatus: input.onModelStatus,
-        onTextDelta: input.onModelDelta,
-      },
+      completeOptions,
     );
     return completion.text;
   }
+
 }

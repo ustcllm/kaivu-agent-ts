@@ -13,7 +13,7 @@ import { OpenAIAuthService } from "../auth/OpenAIAuthService.js";
 import { ScientificCapabilityRegistry } from "../capabilities/ScientificCapabilityRegistry.js";
 import { ResearchGraphRegistry } from "../graph/ResearchGraph.js";
 import { LiteratureKnowledgeBase } from "../literature/LiteratureKnowledgeBase.js";
-import type { ResearchState } from "../loop/ResearchState.js";
+import type { ResearchState } from "../shared/types.js";
 import { SciLoop } from "../loop/SciLoop.js";
 import type { TrajectoryEvent } from "../loop/Trajectory.js";
 import { SciMemory } from "../memory/SciMemory.js";
@@ -77,6 +77,10 @@ export class KaivuApiServer {
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (request.method === "OPTIONS") {
       writeJson(response, 204, {});
+      return;
+    }
+    if (request.method === "GET" && request.url?.startsWith("/vendor/marked.esm.js")) {
+      await serveVendorMarked(response);
       return;
     }
     if (request.method === "GET" && (request.url === "/" || request.url?.startsWith("/app.js") || request.url?.startsWith("/styles.css"))) {
@@ -190,7 +194,7 @@ export class KaivuApiServer {
   }
 
   private async resolveModel(body: ResearchRunBody): Promise<ModelProvider> {
-    const withRetry = (provider: ModelProvider) => new RetryingModelProvider(provider, { maxAttempts: 5 });
+    const withRetry = (provider: ModelProvider) => new RetryingModelProvider(provider, { maxAttempts: 10 });
     if (!body.model || body.model === "local-echo") {
       return new EchoModelProvider();
     }
@@ -310,17 +314,16 @@ function trajectoryEventDetails(event: TrajectoryEvent): Record<string, unknown>
   if (event.type === "stage_output") {
     const input = typeof payload.input === "object" && payload.input !== null ? payload.input as Record<string, unknown> : {};
     const output = typeof payload.output === "object" && payload.output !== null ? payload.output as Record<string, unknown> : {};
-    const exchange = typeof output.exchange === "object" && output.exchange !== null ? output.exchange as Record<string, unknown> : output;
     const runtime = typeof payload.runtime === "object" && payload.runtime !== null ? payload.runtime as Record<string, unknown> : {};
     const observability = typeof payload.observability === "object" && payload.observability !== null ? payload.observability as Record<string, unknown> : {};
     return {
       input: pickDefined(input),
       output: pickDefined({
-        summary: exchange.summary,
-        evidence: summarizeEvidence(exchange.evidence),
-        hypotheses: summarizeHypotheses(exchange.hypotheses),
-        artifacts: summarizeArtifacts(exchange.artifacts),
-        decision: exchange.decision,
+        summary: output.summary,
+        evidence: summarizeEvidence(output.evidence),
+        hypotheses: summarizeHypotheses(output.hypotheses),
+        artifacts: summarizeArtifacts(output.artifacts),
+        decision: output.decision,
       }),
       runtime: pickDefined({
         model: runtime.model,
@@ -669,6 +672,20 @@ async function servePublic(url: string | undefined, response: ServerResponse): P
     response.end(content);
   } catch {
     writeJson(response, 404, { error: "not found" });
+  }
+}
+
+async function serveVendorMarked(response: ServerResponse): Promise<void> {
+  try {
+    const content = await readFile(join(process.cwd(), "node_modules", "marked", "lib", "marked.esm.js"));
+    response.writeHead(200, {
+      "Content-Type": "text/javascript; charset=utf-8",
+      "Access-Control-Allow-Origin": "*",
+      "Cache-Control": "no-store",
+    });
+    response.end(content);
+  } catch {
+    writeJson(response, 404, { error: "marked vendor bundle not found; run npm install" });
   }
 }
 

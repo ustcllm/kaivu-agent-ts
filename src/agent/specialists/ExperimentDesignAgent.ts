@@ -7,10 +7,9 @@ export class ExperimentDesignAgent extends BaseSpecialistAgent {
   description = "Designs experiment portfolios, quality gates, and resource-aware execution plans.";
 
   async run(input: SpecialistRunInput): Promise<StageResult> {
-    const summary = await this.modelSummary(
-      input,
-      `Design a discriminative experiment portfolio for: ${input.plan.objective}. Include quality gates and resource tradeoffs.`,
-    );
+    const summary = await this.modelStep(input, {
+      prompt: `Design a discriminative experiment portfolio for: ${input.plan.objective}. Include quality gates and resource tradeoffs.`,
+    });
     return {
       stage: this.stage,
       specialistId: this.id,

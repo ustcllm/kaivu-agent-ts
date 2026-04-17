@@ -6,7 +6,7 @@ import type { ResearchGraphRegistry } from "../graph/ResearchGraph.js";
 import type { LiteratureKnowledgeBase } from "../literature/LiteratureKnowledgeBase.js";
 import type { SciMemory } from "../memory/SciMemory.js";
 import { makeId } from "../shared/ids.js";
-import type { StagePlan, StageResult } from "../shared/types.js";
+import type { ResearchState, StagePlan, StageResult } from "../shared/types.js";
 import type { ModelProvider } from "./ModelProvider.js";
 import type { ModelRegistry } from "./ModelRegistry.js";
 import type { RuntimeEvent } from "./RuntimeEvent.js";
@@ -17,7 +17,7 @@ export interface RuntimeStageInput {
   agent: SciAgent;
   specialist: SpecialistAgent;
   plan: StagePlan;
-  researchState: Record<string, unknown>;
+  researchState: ResearchState;
   memory: SciMemory;
   onEvent?: (event: RuntimeEvent) => void;
 }

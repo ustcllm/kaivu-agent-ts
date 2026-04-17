@@ -2,8 +2,8 @@ import type { SciAgent } from "../agent/SciAgent.js";
 import type { ResearchGraphRegistry } from "../graph/ResearchGraph.js";
 import type { SciMemory } from "../memory/SciMemory.js";
 import type { SciRuntime } from "../runtime/SciRuntime.js";
-import type { ResearchMode, ScientificTask } from "../shared/types.js";
-import { applyStageResult, buildAgentResearchStateView, createInitialResearchState, createStageExchangeView, type ResearchState } from "./ResearchState.js";
+import type { ResearchMode, ResearchState, ScientificTask } from "../shared/types.js";
+import { applyStageResult, createInitialResearchState } from "./ResearchState.js";
 import { ResearchTrajectory, type TrajectoryEvent } from "./Trajectory.js";
 
 export interface ResearchRunInput {
@@ -37,8 +37,7 @@ export class SciLoop {
     while (!state.done && iterationsThisRun < maxIterations) {
       const stage = state.currentStage;
       this.emit(input, trajectory.recordLoopDecision(stage, `Selected stage ${stage} at iteration ${state.iteration}.`));
-      const agentResearchState = buildAgentResearchStateView(state);
-      const plan = input.agent.buildStagePlan(state.task, stage, agentResearchState);
+      const plan = input.agent.buildStagePlan(state.task, stage, state);
       this.emit(
         input,
         trajectory.record("stage_plan", {
@@ -54,7 +53,7 @@ export class SciLoop {
         agent: input.agent,
         specialist,
         plan,
-        researchState: agentResearchState,
+        researchState: state,
         memory: this.memory,
         onEvent: (event) => {
           this.emit(input, trajectory.recordRuntimeEvents([event]));
@@ -71,7 +70,11 @@ export class SciLoop {
             previousHypothesisCount: state.hypotheses.length,
           },
           output: {
-            exchange: createStageExchangeView(runtimeResult.stageResult),
+            summary: runtimeResult.stageResult.summary,
+            decision: runtimeResult.stageResult.decision,
+            artifacts: runtimeResult.stageResult.artifacts,
+            evidence: runtimeResult.stageResult.evidence,
+            hypotheses: runtimeResult.stageResult.hypotheses,
           },
           observability: {
             processTrace: runtimeResult.stageResult.processTrace ?? [],

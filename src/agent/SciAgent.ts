@@ -1,4 +1,10 @@
-import { DEFAULT_STAGE_ORDER, type ScientificStage, type ScientificTask, type StagePlan } from "../shared/types.js";
+import {
+  DEFAULT_STAGE_ORDER,
+  type ResearchState,
+  type ScientificStage,
+  type ScientificTask,
+  type StagePlan,
+} from "../shared/types.js";
 import type { SpecialistAgent } from "./SpecialistAgent.js";
 
 export interface SciAgentConfig {
@@ -35,7 +41,7 @@ export class SciAgent {
     return specialist;
   }
 
-  buildStagePlan(task: ScientificTask, stage: ScientificStage, researchState: Record<string, unknown>): StagePlan {
+  buildStagePlan(task: ScientificTask, stage: ScientificStage, researchState: ResearchState): StagePlan {
     const specialist = this.specialistFor(stage);
     const discipline = task.discipline ?? this.discipline;
     return {

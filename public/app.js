@@ -1,3 +1,10 @@
+﻿import { marked } from "/vendor/marked.esm.js";
+
+marked.setOptions({
+  breaks: true,
+  gfm: true,
+});
+
 const chatForm = document.querySelector("#chatForm");
 const messages = document.querySelector("#messages");
 const queryInput = document.querySelector("#queryInput");
@@ -8,20 +15,28 @@ const saveFixtureButton = document.querySelector("#saveFixtureButton");
 const loadFixtureButton = document.querySelector("#loadFixtureButton");
 const clearFixtureButton = document.querySelector("#clearFixtureButton");
 const fixtureStatus = document.querySelector("#fixtureStatus");
+const fixtureSelect = document.querySelector("#fixtureSelect");
 
 const STAGE_FIXTURE_KEY = "kaivu.stageFixture.v1";
+const STAGE_FIXTURES_KEY = "kaivu.stageFixtures.v2";
 
 let activeController = null;
 let activeTimer = null;
 let pendingReview = null;
 let activeStageOutputHtml = "";
+let activeFinalStageOutputHtml = "";
 let activeStatusInfo = "";
 let activeProgressItems = [];
+let activeSubstageOutputs = [];
+let activeRuntimeModel = "";
 let activeLiveOutputText = "";
 let activeLiveStage = "";
 let activeStreamQueue = "";
 let activeStreamTimer = null;
 let activePendingStageOutputHtml = "";
+let activeStageComplete = false;
+let processedDetailsOpen = false;
+let canSaveCurrentStage = false;
 
 continueButton.addEventListener("click", () => {
   if (!pendingReview || activeController) return;
@@ -34,20 +49,32 @@ saveFixtureButton.addEventListener("click", () => {
 });
 
 loadFixtureButton.addEventListener("click", () => {
-  const fixture = loadStageFixture();
+  const fixtures = loadStageFixtures();
+  if (fixtures.length > 1 && fixtureSelect.hidden) {
+    fixtureSelect.hidden = false;
+    fixtureSelect.focus();
+    updateFixtureControls();
+    return;
+  }
+  const fixture = selectedStageFixture();
   if (!fixture) return;
-  pendingReview = {
-    task: fixture.task,
-    state: fixture.state,
-  };
-  appendMessage("assistant", "", renderFixtureLoadedMessage(fixture));
-  updateContinueButton(true);
-  updateFixtureControls();
+  loadSelectedFixture(fixture);
 });
 
 clearFixtureButton.addEventListener("click", () => {
-  localStorage.removeItem(STAGE_FIXTURE_KEY);
+  const fixture = selectedStageFixture();
+  if (fixture?.id) {
+    saveStageFixtures(loadStageFixtures().filter((item) => item.id !== fixture.id));
+  } else {
+    localStorage.removeItem(STAGE_FIXTURE_KEY);
+  }
   updateFixtureControls();
+});
+
+fixtureSelect.addEventListener("change", () => {
+  const fixture = selectedStageFixture();
+  if (!fixture) return;
+  loadSelectedFixture(fixture);
 });
 
 chatForm.addEventListener("submit", async (event) => {
@@ -69,10 +96,16 @@ async function runResearchTurn(query, options = {}) {
   queryInput.value = "";
   updateContinueButton(false);
   activeStageOutputHtml = "";
+  activeFinalStageOutputHtml = "";
   activeStatusInfo = `Model: ${selectedModelLabel()}`;
   activeProgressItems = [];
+  activeSubstageOutputs = [];
+  activeRuntimeModel = selectedModelLabel();
   activeLiveOutputText = "";
   activeLiveStage = "";
+  activeStageComplete = false;
+  processedDetailsOpen = false;
+  canSaveCurrentStage = false;
   resetStreamBuffer();
 
   const statusMessage = appendMessage("assistant", "");
@@ -108,17 +141,21 @@ async function runResearchTurn(query, options = {}) {
     const result = await postEventStream("/research/run-stream", body, activeController.signal, (entry) => {
       handleConversationEvent(entry, statusMessage, () => Math.floor((Date.now() - startedAt) / 1000));
     });
+    recoverFinalStageOutputFromResult(result);
     await waitForStreamDrain(statusMessage, () => Math.floor((Date.now() - startedAt) / 1000));
+    refreshStageOutput(statusMessage, Math.floor((Date.now() - startedAt) / 1000), "Stage output ready");
 
     const paused = String(result.state?.stopReason || "").startsWith("paused_after_");
     if (paused) {
       pendingReview = { task: result.state.task, state: result.state };
+      canSaveCurrentStage = true;
       updateFixtureControls();
       updateStatusOnly(
         statusMessage,
         Math.floor((Date.now() - startedAt) / 1000),
         "Paused for review",
       );
+      refreshStageOutput(statusMessage, Math.floor((Date.now() - startedAt) / 1000), "Paused for review");
       updateContinueButton(true);
     } else {
       renderFinalInto(statusMessage, result, Math.floor((Date.now() - startedAt) / 1000));
@@ -157,6 +194,18 @@ function taskWithFeedback(task, feedback) {
       reviewFeedback: [...existing, feedback],
     },
   };
+}
+
+function loadSelectedFixture(fixture) {
+  pendingReview = {
+    task: fixture.task,
+    state: fixture.state,
+  };
+  canSaveCurrentStage = false;
+  fixtureSelect.hidden = true;
+  appendMessage("assistant", "", renderFixtureLoadedMessage(fixture));
+  updateContinueButton(true);
+  updateFixtureControls();
 }
 
 function appendMessage(role, content, html) {
@@ -250,11 +299,11 @@ function handleConversationEvent(entry, statusMessage, seconds) {
   }
   if (type === "stage_output") {
     const rendered = renderStageConversation(entry);
-    if (activeLiveOutputText || activeStreamQueue) {
-      activePendingStageOutputHtml = rendered;
-      return;
-    }
-    activeStageOutputHtml = rendered;
+    activeFinalStageOutputHtml = rendered;
+    activePendingStageOutputHtml = "";
+    activeStageComplete = true;
+    clearStreamBuffer();
+    activeStageOutputHtml = composeStageOutput();
     renderStatusInto(statusMessage, currentSeconds(seconds), "Stage output ready");
     return;
   }
@@ -299,14 +348,49 @@ function ensureAssistantShell(container) {
 function renderProgressInto(container) {
   const progress = container.querySelector(".stage-progress");
   if (!progress) return;
-  progress.innerHTML = activeProgressItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
-  progress.hidden = activeProgressItems.length === 0;
+  progress.innerHTML = "";
+  progress.hidden = true;
 }
 
 function renderStageOutputInto(container) {
   const host = container.querySelector(".stage-output-host");
-  if (!host || !activeStageOutputHtml) return;
+  if (!host) return;
+  rememberProcessedDetailsState(host);
+  if (!activeStageOutputHtml) {
+    host.innerHTML = "";
+    return;
+  }
   host.innerHTML = `<hr class="stage-divider" />${activeStageOutputHtml}`;
+  bindProcessedDetailsState(host);
+}
+
+function refreshStageOutput(container, seconds, status) {
+  if (activePendingStageOutputHtml) {
+    activeFinalStageOutputHtml = activePendingStageOutputHtml;
+    activePendingStageOutputHtml = "";
+  }
+  if (activeFinalStageOutputHtml || activeSubstageOutputs.length > 0) {
+    activeStageOutputHtml = composeStageOutput();
+    renderStatusInto(container, seconds, status);
+  } else {
+    updateStatusOnly(container, seconds, status);
+  }
+}
+
+function recoverFinalStageOutputFromResult(result) {
+  if (activeFinalStageOutputHtml) return;
+  const exchanges = Array.isArray(result?.state?.exchangeViews) ? result.state.exchangeViews : [];
+  const latest = exchanges.at(-1);
+  if (!latest?.summary) return;
+  activeFinalStageOutputHtml = `
+    <section class="stage-output-inline">
+      <h3>${escapeHtml(humanizeKey(String(latest.stage || "stage")))} Output</h3>
+      <div class="stage-markdown">${renderMarkdown(String(latest.summary))}</div>
+    </section>
+  `;
+  activeStageComplete = true;
+  clearStreamBuffer();
+  activeStageOutputHtml = composeStageOutput();
 }
 
 function renderErrorInto(container, seconds, error) {
@@ -324,30 +408,38 @@ function renderRuntimeStatus(container, entry, seconds) {
   const latest = runtimeEvents.at(-1) || {};
   const runtime = latest.runtime || {};
   const status = runtimeStatusLabel(latest);
+  if (activeStageComplete && latest.event !== "stage progress") return;
+  const modelLine = displayModelLine(runtime, latest);
+  if (modelLine) activeRuntimeModel = modelLine.replace(/^Model:\s*/, "");
   if (latest.event === "stage progress") {
     activeProgressItems.push(progressLine(latest.output));
-    const groundingHtml = renderGroundingProgressOutput(latest.output);
-    if (groundingHtml) {
-      activeStageOutputHtml = appendStageOutputHtml(activeStageOutputHtml, groundingHtml);
-    }
+    recordSubstageOutput(latest);
+    activeStageOutputHtml = composeStageOutput(
+      activeFinalStageOutputHtml
+        ? undefined
+        : activeLiveOutputText
+          ? renderLiveStageOutput(activeLiveStage, activeLiveOutputText)
+          : undefined,
+    );
   }
   if (latest.event === "model delta") {
     enqueueModelDelta(String(latest.output?.delta || ""), String(latest.stage || activeLiveStage || "stage"), container, seconds);
   }
   activeStatusInfo = [
-    displayModelLine(runtime, latest),
+    modelLine,
     runtime.tools ? `Tools: ${compactToolNames(runtime.tools) || "none"}` : "",
     retryNote(latest),
   ].filter(Boolean).join(" | ");
   renderStatusInto(container, currentSeconds(seconds), status);
 }
 
-function appendStageOutputHtml(existing, next) {
-  if (!next) return existing || "";
-  return existing ? `${existing}${next}` : next;
+function composeStageOutput(mainHtml) {
+  const body = mainHtml ?? activeFinalStageOutputHtml;
+  return `${renderIntermediateResults()}${body || ""}`;
 }
 
 function enqueueModelDelta(delta, stage, container, seconds) {
+  if (activeStageComplete || activeFinalStageOutputHtml) return;
   if (!delta) return;
   activeLiveStage = stage;
   activeStreamQueue += delta;
@@ -356,7 +448,9 @@ function enqueueModelDelta(delta, stage, container, seconds) {
     const nextChunk = activeStreamQueue.slice(0, 6);
     activeStreamQueue = activeStreamQueue.slice(nextChunk.length);
     activeLiveOutputText += nextChunk;
-    activeStageOutputHtml = renderLiveStageOutput(activeLiveStage, activeLiveOutputText);
+    activeStageOutputHtml = composeStageOutput(
+      activeFinalStageOutputHtml ? undefined : renderLiveStageOutput(activeLiveStage, activeLiveOutputText),
+    );
     renderStatusInto(container, currentSeconds(seconds), "Generating output");
     if (!activeStreamQueue) {
       clearInterval(activeStreamTimer);
@@ -364,7 +458,8 @@ function enqueueModelDelta(delta, stage, container, seconds) {
       if (activePendingStageOutputHtml) {
         setTimeout(() => {
           if (activeStreamQueue || activeStreamTimer) return;
-          activeStageOutputHtml = activePendingStageOutputHtml;
+          activeFinalStageOutputHtml = activePendingStageOutputHtml;
+          activeStageOutputHtml = composeStageOutput();
           activePendingStageOutputHtml = "";
           renderStatusInto(container, currentSeconds(seconds), "Stage output ready");
         }, 180);
@@ -376,7 +471,8 @@ function enqueueModelDelta(delta, stage, container, seconds) {
 function waitForStreamDrain(container, seconds) {
   if (!activeStreamQueue && !activeStreamTimer) {
     if (activePendingStageOutputHtml) {
-      activeStageOutputHtml = activePendingStageOutputHtml;
+      activeFinalStageOutputHtml = activePendingStageOutputHtml;
+      activeStageOutputHtml = composeStageOutput();
       activePendingStageOutputHtml = "";
       renderStatusInto(container, currentSeconds(seconds), "Stage output ready");
     }
@@ -387,7 +483,8 @@ function waitForStreamDrain(container, seconds) {
       if (activeStreamQueue || activeStreamTimer) return;
       clearInterval(timer);
       if (activePendingStageOutputHtml) {
-        activeStageOutputHtml = activePendingStageOutputHtml;
+        activeFinalStageOutputHtml = activePendingStageOutputHtml;
+        activeStageOutputHtml = composeStageOutput();
         activePendingStageOutputHtml = "";
         renderStatusInto(container, currentSeconds(seconds), "Stage output ready");
       }
@@ -397,12 +494,30 @@ function waitForStreamDrain(container, seconds) {
 }
 
 function resetStreamBuffer() {
+  clearStreamBuffer();
+}
+
+function clearStreamBuffer() {
   activeStreamQueue = "";
   activePendingStageOutputHtml = "";
   if (activeStreamTimer) {
     clearInterval(activeStreamTimer);
     activeStreamTimer = null;
   }
+}
+
+function rememberProcessedDetailsState(host) {
+  const details = host.querySelector(".processed-steps");
+  if (details) processedDetailsOpen = details.open;
+}
+
+function bindProcessedDetailsState(host) {
+  const details = host.querySelector(".processed-steps");
+  if (!details) return;
+  details.open = processedDetailsOpen;
+  details.addEventListener("toggle", () => {
+    processedDetailsOpen = details.open;
+  });
 }
 
 function currentSeconds(value) {
@@ -534,142 +649,194 @@ function renderLiveStageOutput(stage, text) {
 }
 
 function stageOutputHtml(output) {
-  const text = output?.summary || output?.decision?.reason || "This stage completed, but no concise output summary was returned.";
-  return `${renderGroundingTrail(output?.process)}<div class="stage-markdown">${renderMarkdown(String(text))}</div>`;
+  const text = output?.summary || output?.decision?.reason || output?.status || "This stage completed, but no concise output summary was returned.";
+  return `<div class="stage-markdown">${renderMarkdown(String(text))}</div>`;
 }
 
-function renderGroundingTrail(process) {
-  const grounding = Array.isArray(process)
-    ? process.find((item) => String(item?.label || "").toLowerCase().includes("ground"))
-    : null;
-  const data = grounding?.data || {};
-  const terms = Array.isArray(data.candidateTerms) ? data.candidateTerms : [];
-  const results = Array.isArray(data.groundingResults) ? data.groundingResults : [];
-  if (terms.length === 0 && results.length === 0) return "";
-  return `
-    <section class="grounding-trail">
-      <h4>Grounding Process</h4>
-      ${terms.length ? `<p class="muted">Detected terms: ${escapeHtml(terms.join(", "))}</p>` : ""}
-      ${results.length ? `<ol>${results.map(renderGroundingResult).join("")}</ol>` : `<p class="muted">No grounding lookup was needed.</p>`}
-    </section>
-  `;
-}
-
-function renderGroundingProgressOutput(output) {
-  const data = output?.data || {};
-  if (!data || typeof data !== "object") return "";
-  const tool = String(data.tool || "");
-  const status = String(data.status || "");
-  const hasGroundingResult = tool.includes("web_search") || tool.includes("literature_wiki") || data.note || data.resultCount !== undefined;
-  if (!hasGroundingResult || status === "started") return "";
-  const result = {
-    tool,
-    status: status || "completed",
-    summary: data.summary || data.note || JSON.stringify({
-      results: Array.isArray(data.topResults) ? data.topResults : [],
-      note: data.note,
-    }),
+function recordSubstageOutput(event) {
+  const output = event?.output || {};
+  const data = output?.data && typeof output.data === "object" ? output.data : {};
+  const label = String(output?.label || "Substage");
+  const detail = String(output?.detail || "");
+  const status = String(data.status || output.status || "");
+  if (label === "Ground selected term") return;
+  if (!isDisplayableSubstage(label, detail, data)) return;
+  const key = substageKey(event, label, data);
+  const next = {
+    key,
+    stage: String(event?.stage || activeLiveStage || "stage"),
+    label,
+    detail,
+    status,
+    data,
+    model: activeRuntimeModel || selectedModelLabel(),
   };
-  return `
-    <section class="stage-output-inline grounding-live">
-      <h3>Grounding Output</h3>
-      <section class="grounding-trail">
-        <ol>${renderGroundingResult(result)}</ol>
-      </section>
-    </section>
-  `;
-}
-
-function renderGroundingResult(result) {
-  const parsed = parseMaybeJson(result?.summary);
-  const count = Array.isArray(parsed?.results) ? parsed.results.length : undefined;
-  const top = Array.isArray(parsed?.results) ? parsed.results.slice(0, 3) : [];
-  const markdown = groundingResultMarkdown(result, parsed);
-  return `
-    <li>
-      <strong>${escapeHtml(result?.tool || "tool")}</strong>
-      <span class="muted">${escapeHtml(result?.status || "unknown")}${count !== undefined ? `, ${count} result(s)` : ""}</span>
-      ${parsed?.note ? `<p>${escapeHtml(parsed.note)}</p>` : ""}
-      ${top.length ? `<ul>${top.map((item) => `<li>${renderSearchResultLink(item)}</li>`).join("")}</ul>` : ""}
-      ${markdown ? `<div class="grounding-markdown stage-markdown">${renderMarkdown(markdown)}</div>` : ""}
-    </li>
-  `;
-}
-
-function renderSearchResultLink(item) {
-  const title = escapeHtml(item?.title || item?.id || "Untitled result");
-  const link = item?.link || item?.id;
-  const summary = typeof item?.summary === "string" ? `<div class="muted search-result-summary">${renderMarkdown(item.summary)}</div>` : "";
-  const titleHtml = link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noreferrer">${title}</a>` : title;
-  return `${titleHtml}${summary}`;
-}
-
-function groundingResultMarkdown(result, parsed) {
-  if (typeof parsed?.summary === "string") return parsed.summary;
-  if (typeof result?.summary === "string" && !parsed) return result.summary;
-  return "";
-}
-
-function parseMaybeJson(value) {
-  if (typeof value !== "string") return null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
+  const existingIndex = activeSubstageOutputs.findIndex((item) => item.key === key);
+  if (existingIndex >= 0) {
+    activeSubstageOutputs[existingIndex] = { ...activeSubstageOutputs[existingIndex], ...next };
+    return;
   }
+  activeSubstageOutputs.push(next);
+}
+
+function isDisplayableSubstage(label, detail, data) {
+  if (label || detail) return true;
+  if (!data || typeof data !== "object") return false;
+  return Object.keys(data).length > 0;
+}
+
+function substageKey(event, label, data) {
+  const discriminator = data.term || data.query || data.step || data.tool || data.digestTool || "";
+  return [
+    event?.stage || activeLiveStage || "stage",
+    label,
+    discriminator,
+  ].map((item) => String(item).trim().toLowerCase()).join("::");
+}
+
+function renderIntermediateResults() {
+  const items = activeSubstageOutputs
+    .filter((item) => isMeaningfulIntermediateResult(item))
+    .map(renderIntermediateNarrative)
+    .filter(Boolean);
+  if (items.length === 0) return "";
+  return `
+    <details class="processed-steps"${processedDetailsOpen ? " open" : ""}>
+      <summary>Processed ${items.length} intermediate result${items.length === 1 ? "" : "s"}</summary>
+      <div class="processed-steps-body">
+        ${items.map((item) => `<div class="processed-step stage-markdown">${renderMarkdown(compactNarrative(item))}</div>`).join("")}
+      </div>
+    </details>
+  `;
+}
+
+function isMeaningfulIntermediateResult(item) {
+  const label = String(item.label || "").toLowerCase();
+  const data = item.data || {};
+  if (String(item.status || data.status || "") === "started") return false;
+  if (label.includes("interpret user query")) return false;
+  if (label === "ground selected term") return false;
+  return true;
+}
+
+function renderIntermediateNarrative(item) {
+  const label = String(item.label || "").toLowerCase();
+  const data = item.data || {};
+  if (label.includes("select grounding")) return renderGroundingSelectionIntermediate(item, data);
+  if (label.includes("search web") || String(data.tool || "").includes("web_search")) {
+    return renderWebGroundingIntermediate(item, data);
+  }
+  return renderGenericIntermediate(item, data);
+}
+
+function renderGroundingSelectionIntermediate(item, data) {
+  const terms = Array.isArray(data.terms) ? data.terms.filter(Boolean) : [];
+  const discipline = data.provisionalDiscipline && typeof data.provisionalDiscipline === "object"
+    ? data.provisionalDiscipline
+    : {};
+  const lines = [
+    `During term identification, ${item.model || selectedModelLabel()} selected the terms that need grounding.`,
+    terms.length ? `Selected terms: ${terms.map((term) => `\`${term}\``).join(", ")}.` : `No grounding terms were selected.${data.noGroundingReason ? ` ${data.noGroundingReason}` : ""}`,
+    discipline.label ? `Provisional discipline: ${discipline.label}${discipline.confidence !== undefined ? `, confidence ${Number(discipline.confidence).toFixed(2)}` : ""}.` : "",
+    data.rationale ? `Selection rationale: ${data.rationale}` : "",
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
+function renderWebGroundingIntermediate(item, data) {
+  const lines = [
+    `Using ${item.model || selectedModelLabel()} with ${data.tool || "hosted web search"}, Kaivu grounded ${data.term ? `\`${data.term}\`` : "the selected term"}.`,
+    data.status ? `Search status: ${data.status}${data.resultCount !== undefined ? `, ${data.resultCount} result(s)` : ""}.` : "",
+    data.note ? `Note: ${data.note}` : "",
+  ];
+  const topResults = Array.isArray(data.topResults) ? data.topResults.filter(hasUsefulReferenceLink) : [];
+  if (topResults.length > 0) {
+    lines.push("Top references:");
+    for (const result of topResults) {
+      const title = result?.title || result?.id || "Untitled result";
+      const link = result?.link || result?.id;
+      lines.push(link ? `- [${title}](${link})` : `- ${title}`);
+    }
+  }
+  if (data.summary) {
+    lines.push("Grounding result:");
+    lines.push(normalizeGroundingSummary(data.summary));
+  }
+  return lines.filter(Boolean).join("\n");
+}
+
+function renderGenericIntermediate(item, data) {
+  const lines = [
+    `${humanizeKey(String(item.label || "step"))} completed.`,
+    item.detail ? String(item.detail) : "",
+  ];
+  const compact = compactSubstageData(data);
+  if (compact) lines.push(compact);
+  return lines.filter(Boolean).join("\n");
+}
+
+function normalizeGroundingSummary(value) {
+  return String(value)
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/\[Kaivu note:[\s\S]*?\]$/i, "")
+    .trim();
+}
+
+function hasUsefulReferenceLink(result) {
+  const link = result?.link || result?.id;
+  return typeof link === "string" && /^https?:\/\//i.test(link);
+}
+
+function compactNarrative(text) {
+  const lines = [];
+  for (const rawLine of String(text).replace(/\r\n/g, "\n").split("\n")) {
+    const line = cleanNarrativeLine(rawLine);
+    if (!line) continue;
+    if (rawLine.trim().startsWith(",") && lines.length > 0) {
+      lines[lines.length - 1] = `${lines[lines.length - 1]}, ${line}`;
+      continue;
+    }
+    lines.push(line);
+  }
+  return lines.join("\n");
+}
+
+function cleanNarrativeLine(value) {
+  return String(value)
+    .trim()
+    .replace(/^([#>*\-\d.)\s]+),\s*/, "$1")
+    .replace(/^,\s*/, "")
+    .trim();
 }
 
 function renderMarkdown(markdown) {
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
-  const html = [];
-  let paragraph = [];
-  let list = [];
-
-  const flushParagraph = () => {
-    if (paragraph.length === 0) return;
-    html.push(`<p>${inlineMarkdown(paragraph.join(" "))}</p>`);
-    paragraph = [];
-  };
-  const flushList = () => {
-    if (list.length === 0) return;
-    html.push(`<ul>${list.map((item) => `<li>${inlineMarkdown(item)}</li>`).join("")}</ul>`);
-    list = [];
-  };
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      flushParagraph();
-      flushList();
-      continue;
-    }
-    const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
-    if (heading) {
-      flushParagraph();
-      flushList();
-      const level = Math.min(3, heading[1].length + 3);
-      html.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
-      continue;
-    }
-    const bullet = trimmed.match(/^[-*]\s+(.+)$/);
-    if (bullet) {
-      flushParagraph();
-      list.push(bullet[1]);
-      continue;
-    }
-    paragraph.push(trimmed);
-  }
-  flushParagraph();
-  flushList();
-  return html.join("") || `<p>${escapeHtml(markdown)}</p>`;
+  const html = marked.parse(String(markdown || ""), { async: false });
+  return sanitizeMarkdownHtml(html) || `<p>${escapeHtml(markdown)}</p>`;
 }
 
-function inlineMarkdown(text) {
-  return escapeHtml(text)
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
-    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noreferrer">$2</a>')
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/`(.+?)`/g, "<code>$1</code>");
+function sanitizeMarkdownHtml(html) {
+  const template = document.createElement("template");
+  template.innerHTML = String(html);
+  const allowedTags = new Set(["A", "P", "UL", "OL", "LI", "STRONG", "EM", "CODE", "PRE", "BLOCKQUOTE", "H1", "H2", "H3", "H4", "H5", "H6", "BR", "HR"]);
+  for (const element of [...template.content.querySelectorAll("*")]) {
+    if (!allowedTags.has(element.tagName)) {
+      element.replaceWith(document.createTextNode(element.textContent || ""));
+      continue;
+    }
+    const href = element.tagName === "A" ? element.getAttribute("href") || "" : "";
+    for (const attribute of [...element.attributes]) {
+      element.removeAttribute(attribute.name);
+    }
+    if (element.tagName === "A") {
+      if (/^https?:\/\//i.test(href)) {
+        element.setAttribute("href", href);
+        element.setAttribute("target", "_blank");
+        element.setAttribute("rel", "noreferrer");
+      }
+    }
+  }
+  return template.innerHTML;
 }
 
 function renderConversationBlock(title, value, omitKeys = []) {
@@ -751,7 +918,7 @@ function setBusy(busy) {
   sendButton.textContent = busy ? "Cancel" : "Send";
   queryInput.disabled = busy;
   continueButton.disabled = busy || !pendingReview;
-  saveFixtureButton.disabled = busy || !pendingReview;
+  saveFixtureButton.disabled = busy || !pendingReview || !canSaveCurrentStage;
   loadFixtureButton.disabled = busy || !loadStageFixture();
   clearFixtureButton.disabled = busy || !loadStageFixture();
 }
@@ -762,42 +929,106 @@ function updateContinueButton(visible) {
 }
 
 function saveStageFixture(review) {
+  if (!canSaveCurrentStage) return;
   const fixture = {
     version: 1,
+    id: `fixture_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     savedAt: new Date().toISOString(),
     task: review.task,
     state: review.state,
     resumeStage: review.state?.currentStage,
     completedStages: review.state?.completedStages || [],
   };
-  localStorage.setItem(STAGE_FIXTURE_KEY, JSON.stringify(fixture));
+  const fixtures = [fixture, ...loadStageFixtures()].slice(0, 20);
+  saveStageFixtures(fixtures);
+  fixtureSelect.value = fixture.id;
   appendMessage("assistant", "", renderFixtureSavedMessage(fixture));
   updateFixtureControls();
 }
 
 function loadStageFixture() {
+  return selectedStageFixture();
+}
+
+function selectedStageFixture() {
+  const fixtures = loadStageFixtures();
+  const selectedId = fixtureSelect.value;
+  return fixtures.find((fixture) => fixture.id === selectedId) || fixtures[0] || null;
+}
+
+function loadStageFixtures() {
+  const rawList = localStorage.getItem(STAGE_FIXTURES_KEY);
+  const fixtures = parseFixtureList(rawList);
+  const legacy = loadLegacyStageFixture();
+  const merged = legacy && !fixtures.some((fixture) => fixture.id === legacy.id)
+    ? [legacy, ...fixtures]
+    : fixtures;
+  return merged.sort((a, b) => String(b.savedAt || "").localeCompare(String(a.savedAt || "")));
+}
+
+function saveStageFixtures(fixtures) {
+  localStorage.setItem(STAGE_FIXTURES_KEY, JSON.stringify(fixtures));
+  localStorage.removeItem(STAGE_FIXTURE_KEY);
+}
+
+function parseFixtureList(raw) {
+  if (!raw) return [];
+  try {
+    const fixtures = JSON.parse(raw);
+    return Array.isArray(fixtures)
+      ? fixtures.filter((fixture) => fixture?.task && fixture?.state).map(ensureFixtureId)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadLegacyStageFixture() {
   const raw = localStorage.getItem(STAGE_FIXTURE_KEY);
   if (!raw) return null;
   try {
     const fixture = JSON.parse(raw);
     if (!fixture?.task || !fixture?.state) return null;
-    return fixture;
+    return ensureFixtureId(fixture);
   } catch {
     return null;
   }
 }
 
+function ensureFixtureId(fixture) {
+  return {
+    ...fixture,
+    id: fixture.id || `legacy_${String(fixture.savedAt || Date.now()).replace(/[^a-z0-9]/gi, "_")}`,
+  };
+}
+
 function updateFixtureControls() {
-  const fixture = loadStageFixture();
+  const fixtures = loadStageFixtures();
+  const previousSelection = fixtureSelect.value;
+  fixtureSelect.innerHTML = fixtures.length
+    ? fixtures.map((fixture) => `<option value="${escapeHtml(fixture.id)}">${escapeHtml(fixtureLabel(fixture))}</option>`).join("")
+    : `<option value="">No saved fixtures</option>`;
+  if (fixtures.some((fixture) => fixture.id === previousSelection)) {
+    fixtureSelect.value = previousSelection;
+  }
+  const fixture = selectedStageFixture();
   const resumeStage = fixture?.resumeStage || fixture?.state?.currentStage;
   fixtureStatus.textContent = fixture
-    ? `Saved fixture: resume at ${humanizeKey(String(resumeStage || "next stage"))}.`
+    ? `${fixtures.length} saved fixture(s). ${fixtures.length > 1 ? "Click Load fixture to choose one." : `Ready to resume at ${humanizeKey(String(resumeStage || "next stage"))}.`}`
     : "No saved stage fixture.";
+  fixtureSelect.disabled = fixtures.length === 0 || Boolean(activeController);
+  if (fixtures.length <= 1) fixtureSelect.hidden = true;
   if (!activeController) {
-    saveFixtureButton.disabled = !pendingReview;
+    saveFixtureButton.disabled = !pendingReview || !canSaveCurrentStage;
     loadFixtureButton.disabled = !fixture;
     clearFixtureButton.disabled = !fixture;
   }
+}
+
+function fixtureLabel(fixture) {
+  const stage = humanizeKey(String(fixture.resumeStage || fixture.state?.currentStage || "next stage"));
+  const question = String(fixture.task?.question || fixture.task?.title || "untitled").slice(0, 42);
+  return `${formatFixtureDate(fixture.savedAt)} | ${stage} | ${question}`;
 }
 
 function renderFixtureSavedMessage(fixture) {
@@ -808,10 +1039,44 @@ function renderFixtureSavedMessage(fixture) {
 }
 
 function renderFixtureLoadedMessage(fixture) {
+  const state = fixture.state || {};
+  const task = fixture.task || state.task || {};
+  const latestExchange = Array.isArray(state.exchangeViews) ? state.exchangeViews.at(-1) : undefined;
+  const completedStages = Array.isArray(fixture.completedStages) ? fixture.completedStages : state.completedStages || [];
+  const artifactCount = Array.isArray(state.artifactRefs) ? state.artifactRefs.length : Array.isArray(state.artifacts) ? state.artifacts.length : 0;
+  const evidenceCount = Array.isArray(state.evidence) ? state.evidence.length : 0;
+  const hypothesisCount = Array.isArray(state.hypotheses) ? state.hypotheses.length : 0;
   return `
     <strong>Kaivu</strong>
     <p>Loaded saved fixture. Click <b>Continue next stage</b> to run <code>${escapeHtml(String(fixture.resumeStage || "next stage"))}</code> using the frozen upstream state.</p>
+    <section class="fixture-summary">
+      <dl class="process-details">
+        ${renderDetailRow("saved at", formatFixtureDate(fixture.savedAt))}
+        ${renderDetailRow("resume stage", humanizeKey(String(fixture.resumeStage || state.currentStage || "next stage")))}
+        ${renderDetailRow("completed stages", completedStages.length ? completedStages.map((stage) => humanizeKey(String(stage))) : ["none"])}
+        ${renderDetailRow("question", task.question || task.title || "unknown")}
+        ${renderDetailRow("discipline", task.discipline || "unknown")}
+        ${renderDetailRow("state counts", {
+          evidence: evidenceCount,
+          hypotheses: hypothesisCount,
+          artifacts: artifactCount,
+          iteration: state.iteration ?? 0,
+        })}
+      </dl>
+      ${latestExchange ? `
+        <details class="fixture-output" open>
+          <summary>Latest saved stage output: ${escapeHtml(humanizeKey(String(latestExchange.stage || "stage")))}</summary>
+          <div class="stage-markdown">${renderMarkdown(String(latestExchange.summary || "No saved summary."))}</div>
+        </details>
+      ` : ""}
+    </section>
   `;
+}
+
+function formatFixtureDate(value) {
+  if (!value) return "unknown";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 
 function selectedModelLabel() {

@@ -1,5 +1,5 @@
 import type { ExperimentRunRecord } from "../execution/ExperimentExecutionLoop.js";
-import type { ResearchState } from "../loop/ResearchState.js";
+import type { ResearchState } from "../shared/types.js";
 import type { EvidenceItem, HypothesisItem } from "../shared/types.js";
 
 export type ScientificSurpriseKind =

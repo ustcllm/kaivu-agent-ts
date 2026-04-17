@@ -154,7 +154,7 @@ export class EchoModelProvider implements ModelProvider {
   async complete(messages: ModelMessage[], options: ModelCompleteOptions = {}): Promise<ModelCompletion> {
     const last = messages.at(-1)?.content ?? "";
     const inputTokens = messages.reduce((count, message) => count + message.content.length, 0);
-    const text = `Echo model response for: ${last.slice(0, 200)}`;
+    const text = echoStructuredResponse(last) ?? `Echo model response for: ${last.slice(0, 200)}`;
     await emitTextDeltas(text, options);
     return {
       text,
@@ -165,6 +165,68 @@ export class EchoModelProvider implements ModelProvider {
       },
     };
   }
+}
+
+function echoStructuredResponse(prompt: string): string | undefined {
+  if (prompt.includes("Schema name: grounding_targets")) {
+    return JSON.stringify({
+      discipline: {
+        label: prompt.toLowerCase().includes("attention residual") ? "artificial_intelligence" : "artificial_intelligence",
+        confidence: prompt.toLowerCase().includes("known discipline context") ? 0.95 : 0.72,
+        rationale: "The query uses AI/ML terminology and asks for research directions in an AI context.",
+      },
+      targets: [
+        {
+          term: prompt.toLowerCase().includes("attention residual")
+            ? "attention residual"
+            : "benchmark-driven AI research loop",
+          reason: "This phrase is likely to affect the scientific framing and downstream literature search scope.",
+        },
+      ],
+      rationale: "Select the central technical phrase and leave grounding itself to the hosted web search step.",
+      compatibility: "Selected targets share an artificial_intelligence context.",
+      no_grounding_reason: "",
+    });
+  }
+  if (prompt.includes("Schema name: literature_query_plan")) {
+    return JSON.stringify({
+      search_strategy: "Use broad-to-focused AI research queries derived from the framed problem; avoid invented acronyms or brittle aliases.",
+      queries: [
+        {
+          purpose: "broad conceptual coverage",
+          query: "benchmark driven AI research reproducibility evaluation",
+          scope: "broad",
+          rationale: "Covers the general research loop and reproducibility framing.",
+        },
+        {
+          purpose: "data leakage and validity",
+          query: "AI benchmark data leakage evaluation protocol",
+          scope: "focused",
+          rationale: "Targets benchmark validity risks.",
+        },
+        {
+          purpose: "seed sensitivity",
+          query: "machine learning benchmark seed sensitivity reproducibility",
+          scope: "focused",
+          rationale: "Targets robustness and variance across runs.",
+        },
+        {
+          purpose: "evidence standards",
+          query: "machine learning ablation study evidence quality benchmark",
+          scope: "focused",
+          rationale: "Targets evidence quality and ablation requirements.",
+        },
+        {
+          purpose: "systematic review angle",
+          query: "AI benchmark evaluation systematic review reproducibility",
+          scope: "broad",
+          rationale: "Adds systematic review coverage for prior work.",
+        },
+      ],
+      exclusions: ["Do not invent project-specific acronyms.", "Do not use natural-language questions as queries."],
+    });
+  }
+  return undefined;
 }
 
 export interface CodexCliModelProviderOptions {

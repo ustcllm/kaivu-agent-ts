@@ -148,12 +148,17 @@ export interface StageResult {
   decision: ScientificDecision;
 }
 
-export interface StageExchangeView {
-  stage: ScientificStage;
-  specialistId: string;
-  summary: string;
+export interface ResearchState {
+  /** Full long-lived scientific loop state passed directly across stages. */
+  task: ScientificTask;
+  currentStage: ScientificStage;
+  completedStages: ScientificStage[];
+  iteration: number;
   evidence: EvidenceItem[];
   hypotheses: HypothesisItem[];
-  artifacts: ArtifactRef[];
-  decision: ScientificDecision;
+  artifacts: string[];
+  artifactRefs: ArtifactRef[];
+  blockers: string[];
+  done: boolean;
+  stopReason?: string;
 }

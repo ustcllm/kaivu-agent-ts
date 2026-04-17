@@ -1,6 +1,6 @@
 import type { ScientificEvaluationResult } from "../evaluation/ScientificEvaluationHarness.js";
 import type { ExperimentExecutionLoopState } from "../execution/ExperimentExecutionLoop.js";
-import type { ResearchState } from "../loop/ResearchState.js";
+import type { ResearchState } from "../shared/types.js";
 import type { ScientificStage } from "../shared/types.js";
 
 export interface AutonomousControllerInput {

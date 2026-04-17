@@ -51,7 +51,10 @@
           <div class="stage-fixtures">
             <span id="fixtureStatus">No saved stage fixture.</span>
             <button id="saveFixtureButton" type="button" disabled>Save stage fixture</button>
-            <button id="loadFixtureButton" type="button">Load fixture</button>
+            <div class="fixture-load-menu">
+              <button id="loadFixtureButton" type="button">Load fixture</button>
+              <select id="fixtureSelect" aria-label="Saved stage fixtures" hidden></select>
+            </div>
             <button id="clearFixtureButton" type="button">Clear fixture</button>
           </div>
         </form>

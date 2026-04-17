@@ -21,5 +21,8 @@
     "dotenv": "^16.4.5",
     "typescript": "^5.5.0",
     "undici": "^7.16.0"
+  },
+  "dependencies": {
+    "marked": "^18.0.1"
   }
 }
