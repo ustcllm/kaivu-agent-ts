@@ -6,8 +6,6 @@ export interface LiteratureSearchPaper {
   authors?: string[];
   publishedAt?: string;
   categories?: string[];
-  score?: number;
-  citationCount?: number;
 }
 
 export interface LiteratureSearchOutput {

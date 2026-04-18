@@ -915,6 +915,7 @@ function finalConclusion(state) {
 }
 
 function setBusy(busy) {
+  document.body.classList.toggle("is-running", busy);
   sendButton.textContent = busy ? "Cancel" : "Send";
   queryInput.disabled = busy;
   continueButton.disabled = busy || !pendingReview;

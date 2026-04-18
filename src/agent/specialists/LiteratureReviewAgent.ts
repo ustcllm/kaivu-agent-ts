@@ -1,6 +1,6 @@
 import { makeId } from "../../shared/ids.js";
 import type { ArtifactRef, StageResult } from "../../shared/StageContracts.js";
-import type { LiteratureReviewSynthesisInput, LiteratureStructuredExtraction } from "../../literature/LiteratureKnowledgeBase.js";
+import type { LiteratureIngestResult, LiteratureReviewSynthesisInput, LiteratureStructuredExtraction } from "../../literature/LiteratureKnowledgeBase.js";
 import type { LiteratureSource } from "../../literature/LiteraturePolicy.js";
 import type { LiteratureSearchPaper } from "../../shared/LiteratureSearchTypes.js";
 import {
@@ -61,7 +61,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
         queryCount: searchSteps.steps.length,
       },
     });
-    const retrievalResults = await this.searchArxiv(input, searchSteps.steps, searchSettings.perQueryLimit, 0);
+    const retrievalResults = await this.searchLiterature(input, searchSteps.steps, searchSettings.perQueryLimit, 0);
     const initialCandidates = collectCandidatePapers(retrievalResults, 0, "query_search");
     const initialScreening = await this.screenCandidatePapers(input, problemFrame, initialCandidates, "initial_search");
     let usefulPapers = initialScreening.usefulPapers;
@@ -78,9 +78,9 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
         language: "en",
         purpose: item.purpose,
         disciplineScope: item.disciplineScope,
-        tools: ["arxiv_search"],
+        tools: searchSteps.tools,
       }));
-      const roundResults = await this.searchArxiv(input, expansionSteps, searchSettings.perQueryLimit, round);
+      const roundResults = await this.searchLiterature(input, expansionSteps, searchSettings.perQueryLimit, round);
       retrievalResults.push(...roundResults);
       const roundCandidates = collectCandidatePapers(roundResults, round, "reference_title_expansion");
       const roundScreening = await this.screenCandidatePapers(input, problemFrame, roundCandidates, `reference_expansion_round_${round}`);
@@ -91,17 +91,19 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
         queries: expansionQueries,
         searchedPaperCount: roundCandidates.length,
         usefulPaperCount: usefulPapers.length - before,
-        note: "arXiv does not expose reference lists directly, so this round uses title/abstract-based reference-expansion queries.",
+        note: "Current retrieval tools do not expose parsed reference lists, so this round uses seed title/abstract-based neighborhood expansion.",
       });
     }
     usefulPapers = await this.downloadUsefulPapers(input, usefulPapers);
-    const sourceContext = renderUsefulPaperContext(usefulPapers);
+    const retrievedSourceContext = renderUsefulPaperContext(usefulPapers);
+    const providedSourceContext = renderProvidedSourceContext(sourceIngests);
+    const evidenceContext = [retrievedSourceContext, providedSourceContext].filter(Boolean).join("\n\n");
     input.onProgress?.({
       label: "Collect candidate sources",
       detail: "Collected, screened, expanded, and downloaded useful literature sources for digest synthesis.",
       data: {
         plannedQueryCount: searchSteps.steps.length,
-        retrievedSourceCount: retrievalResults.reduce((count, result) => count + (arxivResultCount(result.output) ?? 0), 0),
+        retrievedSourceCount: retrievalResults.reduce((count, result) => count + (literatureResultCount(result.output) ?? 0), 0),
         initialCandidateCount: initialCandidates.length,
         usefulPaperCount: usefulPapers.length,
         downloadedPaperCount: usefulPapers.filter((paper) => paper.localPath).length,
@@ -115,7 +117,8 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
         "Search plan:",
         renderSearchPlanForPrompt(generatedPlan.plan.search_strategy, searchQueries),
         `Language policy: primary=${problemFrame.languagePolicy.primarySearchLanguage}; input=${problemFrame.languagePolicy.inputLanguage}; reason=${problemFrame.languagePolicy.reason}`,
-        `Retrieved source context:\n${sourceContext || "No live retrieval results were available."}`,
+        "Use only the source context below. Do not add papers, claims, or URLs that are not visible in this context.",
+        `Source context:\n${evidenceContext || "No retrieved or user-provided source context was available."}`,
         "Include search scope, source selection, consensus claims, conflicts, quality caveats, and evidence gaps.",
       ].join("\n"),
     });
@@ -128,7 +131,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       },
     });
     const modelStep = (options: Parameters<ModelStepRunner>[0]) => this.modelStep(input, options);
-    const structuredExtraction = await extractStructuredLiteratureReview(digestMarkdown, sourceContext, searchQueries, modelStep);
+    const structuredExtraction = await extractStructuredLiteratureReview(digestMarkdown, evidenceContext, searchQueries, modelStep);
     input.onProgress?.({
       label: "Extract structured review table",
       detail: structuredExtraction
@@ -193,29 +196,31 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
                 usefulPapers: usefulPapers.map(summarizeUsefulPaper),
               },
               referenceExpansionRounds: expansionSummaries,
-              note: "arXiv retrieval is executed live; Crossref/PubMed remain registered capability stubs.",
+              note: "Literature retrieval used the configured live search tools and kept results in the shared literature-search output contract.",
             },
           },
         },
-        {
-          label: "Check provided sources",
-          status: sourceIngests.length > 0 ? "completed" : "skipped",
-          detail: sourceIngests.length > 0 ? "Ingested user-provided sources before synthesis." : "No user-provided sources were attached to this task.",
-          data: {
-            sourceCount: sourceIngests.length,
-            sourceTitles: sourceIngests.map((item) => item.source.title),
-            literatureWrites: sourceIngests.map((item) => ({
-              sourceId: item.source.id,
-              title: item.source.title,
-              digestId: item.digest.id,
-              digestConfirmed: item.digest.confirmed,
-              wikiPageId: `source:${item.source.id}`,
-              memoryTargetScope: item.memoryProposal.scope,
-              memoryTitle: item.memoryProposal.title,
-              requiresReview: item.memoryProposal.needsReview ?? false,
-            })),
-          },
-        },
+        ...(sourceIngests.length > 0
+          ? [{
+              label: "Ingest provided sources",
+              status: "completed" as const,
+              detail: "Ingested explicitly provided literature sources before synthesis.",
+              data: {
+                sourceCount: sourceIngests.length,
+                sourceTitles: sourceIngests.map((item) => item.source.title),
+                literatureWrites: sourceIngests.map((item) => ({
+                  sourceId: item.source.id,
+                  title: item.source.title,
+                  digestId: item.digest.id,
+                  digestConfirmed: item.digest.confirmed,
+                  wikiPageId: `source:${item.source.id}`,
+                  memoryTargetScope: item.memoryProposal.scope,
+                  memoryTitle: item.memoryProposal.title,
+                  requiresReview: item.memoryProposal.needsReview ?? false,
+                })),
+              },
+            }]
+          : []),
         {
           label: "Synthesize digest",
           status: "completed",
@@ -227,11 +232,11 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
           },
         },
         {
-          label: "Extract evidence gaps",
+          label: "Record literature knowledge",
           status: "completed",
           detail: "Marked the review as provisional until real search tools return source-backed claims.",
           data: {
-            caveat: "External literature search tools are represented as runtime capabilities; actual search execution is still scaffolded.",
+            caveat: "The review is source-backed by retrieved metadata and downloaded PDFs when available; claims remain provisional until paper-level reading is expanded.",
               retrieval: summarizeRetrievalResults(retrievalResults),
               literatureKnowledgeBase: input.literature
                 ? {
@@ -249,12 +254,12 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       evidence: [
         {
           id: makeId("evidence-literature"),
-          claim: retrievalResults.some((result) => (arxivResultCount(result.output) ?? 0) > 0)
-            ? "Literature review used live arXiv retrieval results and should preserve source-backed uncertainty."
+          claim: retrievalResults.some((result) => (literatureResultCount(result.output) ?? 0) > 0)
+            ? "Literature review used live scholarly retrieval results and should preserve source-backed uncertainty."
             : "Literature review attempted live retrieval but found no usable source records.",
           source: "literature_review_agent",
-          strength: retrievalResults.some((result) => (arxivResultCount(result.output) ?? 0) > 0) ? "medium" : "unknown",
-          uncertainty: "arXiv retrieval is incomplete coverage and should be complemented by Crossref/PubMed/source-specific search",
+          strength: retrievalResults.some((result) => (literatureResultCount(result.output) ?? 0) > 0) ? "medium" : "unknown",
+          uncertainty: "Metadata-level retrieval is incomplete coverage and should be complemented by paper-level reading and source-specific search",
         },
       ],
       hypotheses: [],
@@ -284,7 +289,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
           kind: "reference",
           title: "Literature review digest",
           summary: firstMarkdownParagraph(digestMarkdown).slice(0, 220) || digestMarkdown.slice(0, 220),
-          content: `${summary}\n\n## Retrieved Source Context\n${sourceContext}`,
+          content: `${summary}\n\n## Source Context\n${evidenceContext}`,
           tags: ["literature", "digest"],
         },
       ],
@@ -303,20 +308,15 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       return [];
     }
     const task = input.plan.inputs.task as { constraints?: Record<string, unknown> } | undefined;
-    const sourcesFromPlan = input.plan.inputs.literatureSources;
     const sourcesFromTask = task?.constraints?.literatureSources;
-    const sources = Array.isArray(sourcesFromPlan)
-      ? (sourcesFromPlan as LiteratureSource[])
-      : Array.isArray(sourcesFromTask)
-        ? (sourcesFromTask as LiteratureSource[])
-        : [];
+    const sources = Array.isArray(sourcesFromTask) ? (sourcesFromTask as LiteratureSource[]) : [];
     return sources.map((source) =>
       input.literature!.ingest({
         source,
-        mode: input.plan.inputs.literatureIngestMode === "autonomous" ? "autonomous" : "auto",
+        mode: "guided",
         targetScope: "project",
         confidence: "medium",
-        researchMode: input.plan.inputs.researchMode === "autonomous" ? "autonomous" : "interactive",
+        researchMode: "interactive",
       }),
     );
   }
@@ -474,7 +474,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
     };
   }
 
-  private async searchArxiv(
+  private async searchLiterature(
     input: SpecialistRunInput,
     steps: Array<{ index: number; query: string; language: string; purpose: string; disciplineScope?: string; tools: string[] }>,
     limit: number,
@@ -482,22 +482,27 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
   ): Promise<RetrievalResult[]> {
     const retrievalResults: RetrievalResult[] = [];
     for (const step of steps) {
-      const arxivResult = await input.tools.call({
-        name: "arxiv_search",
-        arguments: {
+      const toolResults: RetrievalResult[] = [];
+      for (const tool of step.tools) {
+        const result = await input.tools.call({
+          name: tool,
+          arguments: {
+            query: step.query,
+            limit,
+          },
+        });
+        const retrievalResult = {
           query: step.query,
-          limit,
-        },
-      });
-      retrievalResults.push({
-        query: step.query,
-        purpose: step.purpose,
-        disciplineScope: step.disciplineScope,
-        tool: "arxiv_search",
-        status: arxivResult.status,
-        output: arxivResult.output,
-        error: arxivResult.error,
-      });
+          purpose: step.purpose,
+          disciplineScope: step.disciplineScope,
+          tool,
+          status: result.status,
+          output: result.output,
+          error: result.error,
+        };
+        toolResults.push(retrievalResult);
+        retrievalResults.push(retrievalResult);
+      }
       input.onProgress?.({
         label: round > 0 ? `Reference expansion ${round}: query ${step.index}/${steps.length}` : `Search query ${step.index}/${steps.length}`,
         detail: step.query,
@@ -505,11 +510,14 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
           language: step.language,
           purpose: step.purpose,
           disciplineScope: step.disciplineScope,
-          tools: ["arxiv_search"],
-          status: arxivResult.status,
-          resultCount: arxivResultCount(arxivResult.output),
-          topResults: arxivTopResults(arxivResult.output),
-          note: arxivResult.error,
+          tools: step.tools,
+          resultsByTool: toolResults.map((result) => ({
+            tool: result.tool,
+            status: result.status,
+            resultCount: literatureResultCount(result.output),
+            topResults: literatureTopResults(result.output),
+            error: result.error,
+          })),
         },
       });
     }
@@ -644,7 +652,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
   }
 
   private planSearchSteps(searchQueries: Array<{ query: string; language: string; purpose: string; disciplineScope?: string }>) {
-    const tools = ["arxiv_search", "crossref_search", "pubmed_search"];
+    const tools = ["arxiv_search"];
     return {
       tools,
       steps: searchQueries.map((item, index) => ({
@@ -804,8 +812,6 @@ interface LiteraturePaperCandidate {
   authors?: string[];
   publishedAt?: string;
   categories?: string[];
-  score?: number;
-  citationCount?: number;
   sourceType: string;
   query: string;
   purpose: string;
@@ -1093,8 +1099,8 @@ async function extractStructuredLiteratureReview(
     "Literature digest:",
     summary,
     "",
-    "Retrieved source index:",
-    compactRetrievedSourceContext(sourceContext),
+    "Source context index:",
+    compactSourceContext(sourceContext),
     "",
     schemaInstruction(LITERATURE_EXTRACTION_SCHEMA),
   ].join("\n");
@@ -1308,8 +1314,6 @@ function collectCandidatePapers(results: RetrievalResult[], round: number, disco
       authors: item.authors,
       publishedAt: item.publishedAt,
       categories: item.categories,
-      score: item.score,
-      citationCount: item.citationCount,
       sourceType: result.tool,
       query: result.query,
       purpose: result.purpose,
@@ -1366,7 +1370,6 @@ function toReviewSynthesisSourcesFromPapers(papers: UsefulLiteraturePaper[]): Li
         authors: paper.authors,
         publishedAt: paper.publishedAt,
         categories: paper.categories,
-        citationCount: paper.citationCount,
         sourceType: paper.sourceType,
       })),
     };
@@ -1382,8 +1385,6 @@ function compactPaperForPrompt(paper: LiteraturePaperCandidate): Record<string, 
     authors: paper.authors?.slice(0, 6),
     publishedAt: paper.publishedAt,
     categories: paper.categories,
-    score: paper.score,
-    citationCount: paper.citationCount,
     query: paper.query,
     purpose: paper.purpose,
     disciplineScope: paper.disciplineScope,
@@ -1400,8 +1401,6 @@ function summarizeUsefulPaper(paper: UsefulLiteraturePaper): Record<string, unkn
     relevance: paper.relevance,
     role: paper.role,
     reason: paper.relevanceReason,
-    score: paper.score,
-    citationCount: paper.citationCount,
     disciplineScope: paper.disciplineScope,
     discoveryRound: paper.discoveryRound,
     discoveryMethod: paper.discoveryMethod,
@@ -1442,9 +1441,22 @@ function renderUsefulPaperContext(papers: UsefulLiteraturePaper[]): string {
     if (paper.authors?.length) lines.push(`- authors: ${paper.authors.join(", ")}`);
     if (paper.publishedAt) lines.push(`- published: ${paper.publishedAt}`);
     if (paper.categories?.length) lines.push(`- categories: ${paper.categories.join(", ")}`);
-    if (paper.score !== undefined) lines.push(`- retrieval_score: ${paper.score}`);
-    if (paper.citationCount !== undefined) lines.push(`- citation_count: ${paper.citationCount}`);
     if (paper.summary) lines.push(`abstract: ${paper.summary.slice(0, 900)}`);
+    lines.push("");
+  }
+  return lines.join("\n").trim();
+}
+
+function renderProvidedSourceContext(sourceIngests: LiteratureIngestResult[]): string {
+  const lines: string[] = [];
+  for (const item of sourceIngests) {
+    lines.push(`## ${item.source.title}`);
+    lines.push(`- id: ${item.source.id}`);
+    lines.push(`- source_type: ${item.source.sourceType}`);
+    if (item.source.url) lines.push(`- url: ${item.source.url}`);
+    if (item.source.authors?.length) lines.push(`- authors: ${item.source.authors.join(", ")}`);
+    if (item.source.publishedAt) lines.push(`- published: ${item.source.publishedAt}`);
+    lines.push(item.digest.digestMarkdown);
     lines.push("");
   }
   return lines.join("\n").trim();
@@ -1464,13 +1476,13 @@ function renderSearchQueriesForPrompt(queries: Array<{ query: string; language: 
   return queries.map((item, index) => `${index + 1}. [${item.language}; scope=${item.disciplineScope || "unspecified"}] ${item.query} - ${item.purpose}`).join("\n");
 }
 
-function compactRetrievedSourceContext(sourceContext: string): string {
+function compactSourceContext(sourceContext: string): string {
   const lines = sourceContext
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
     .filter((line) => !line.startsWith("abstract:"));
-  return lines.length > 0 ? lines.join("\n") : "No retrieved source context available.";
+  return lines.length > 0 ? lines.join("\n") : "No source context available.";
 }
 
 function normalizeGeneratedQuery(
@@ -1582,12 +1594,12 @@ function clampInteger(value: unknown, fallback: number, min: number, max: number
   return Math.min(max, Math.max(min, Math.floor(parsed)));
 }
 
-function arxivResultCount(output: unknown): number | undefined {
+function literatureResultCount(output: unknown): number | undefined {
   const results = isRecord(output) && Array.isArray(output.results) ? output.results : undefined;
   return results ? results.length : undefined;
 }
 
-function arxivTopResults(output: unknown): Array<{ title: string; link?: string }> {
+function literatureTopResults(output: unknown): Array<{ title: string; link?: string }> {
   return readLiteratureSearchPapers(output).slice(0, 3).map((item) => ({
     title: item.title,
     link: item.link,
@@ -1608,30 +1620,8 @@ function readLiteratureSearchPapers(output: unknown): LiteratureSearchPaper[] {
       authors: asStringArray(record.authors),
       publishedAt: asString(record.publishedAt) || undefined,
       categories: asStringArray(record.categories),
-      score: asOptionalNumber(record.score),
-      citationCount: asOptionalNumber(record.citationCount),
     };
   });
-}
-
-function renderRetrievalContext(results: Array<{ query: string; purpose: string; disciplineScope?: string; tool: string; status: string; output?: unknown; error?: string }>): string {
-  const lines: string[] = [];
-  for (const result of results) {
-    lines.push(`## ${result.tool}: ${result.query}`);
-    lines.push(`- purpose: ${result.purpose}`);
-    if (result.disciplineScope) lines.push(`- discipline_scope: ${result.disciplineScope}`);
-    lines.push(`- status: ${result.status}`);
-    if (result.error) lines.push(`- error: ${result.error}`);
-    if (isRecord(result.output) && Array.isArray(result.output.results)) {
-      for (const item of result.output.results.slice(0, 5)) {
-        const record = isRecord(item) ? item : {};
-        lines.push(`- ${String(record.title ?? "Untitled source")} (${String(record.link ?? record.id ?? "no url")})`);
-        if (record.summary) lines.push(`  abstract: ${String(record.summary).slice(0, 700)}`);
-      }
-    }
-    lines.push("");
-  }
-  return lines.join("\n").trim();
 }
 
 function summarizeRetrievalResults(results: Array<{ query: string; purpose: string; disciplineScope?: string; tool: string; status: string; output?: unknown; error?: string }>) {
@@ -1641,8 +1631,8 @@ function summarizeRetrievalResults(results: Array<{ query: string; purpose: stri
     disciplineScope: result.disciplineScope,
     tool: result.tool,
     status: result.status,
-    resultCount: arxivResultCount(result.output) ?? 0,
-    topResults: arxivTopResults(result.output),
+    resultCount: literatureResultCount(result.output) ?? 0,
+    topResults: literatureTopResults(result.output),
     error: result.error,
   }));
 }
@@ -1675,11 +1665,6 @@ function asString(value: unknown): string {
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map(asString).filter(Boolean);
-}
-
-function asOptionalNumber(value: unknown): number | undefined {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function normalizeEnum<T extends string>(value: unknown, allowed: T[]): T {

@@ -70,13 +70,11 @@ function normalizeResults(value: unknown): LiteratureSearchPaper[] {
     const id = arxivId ? `https://arxiv.org/abs/${arxivId}` : link ?? `${title}:${publishedAt}`;
     return {
       id,
-      score: asNumber(record.score),
       title,
       summary: abstract || undefined,
       authors: asStringArray(record.authors),
       publishedAt: publishedAt || undefined,
       categories: asStringArray(record.categories),
-      citationCount: asNumber(record.citation ?? record.citations),
       link,
     };
   });
