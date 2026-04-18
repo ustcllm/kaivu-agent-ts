@@ -1,5 +1,5 @@
 import { makeId } from "../shared/ids.js";
-import type { GraphWriteProposal } from "../shared/types.js";
+import type { GraphWriteProposal } from "../shared/GraphTypes.js";
 
 export interface ResearchGraphNode {
   id: string;

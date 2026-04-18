@@ -3,7 +3,9 @@ import type { MemoryRecord } from "../memory/MemoryRecord.js";
 import type { LiteratureKnowledgeBase } from "../literature/LiteratureKnowledgeBase.js";
 import type { ModelCompleteOptions, ModelProvider, ModelProviderStatusEvent } from "../runtime/ModelProvider.js";
 import type { ToolRegistry } from "../runtime/ToolRegistry.js";
-import type { ResearchState, ScientificStage, StagePlan, StageResult } from "../shared/types.js";
+import type { ScientificStage } from "../shared/ScientificLifecycle.js";
+import type { ResearchState } from "../shared/ResearchStateTypes.js";
+import type { StagePlan, StageResult } from "../shared/StageContracts.js";
 
 export interface SpecialistRunInput {
   plan: StagePlan;

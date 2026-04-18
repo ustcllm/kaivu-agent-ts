@@ -1,7 +1,8 @@
 import { makeId } from "../../shared/ids.js";
-import type { ArtifactRef, StageResult } from "../../shared/types.js";
+import type { ArtifactRef, StageResult } from "../../shared/StageContracts.js";
 import type { LiteratureReviewSynthesisInput, LiteratureStructuredExtraction } from "../../literature/LiteratureKnowledgeBase.js";
 import type { LiteratureSource } from "../../literature/LiteraturePolicy.js";
+import type { LiteratureSearchPaper } from "../../shared/LiteratureSearchTypes.js";
 import {
   parseStructuredOutput,
   repairInstruction,
@@ -34,12 +35,12 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       },
     });
     const generatedPlan = await this.generateLiteratureQueryPlan(input, problemFrame);
-    const normalizedQueries = normalizeGeneratedLiteratureQueries(generatedPlan.plan.queries, problemFrame);
+    const screenedQueries = await this.screenGeneratedLiteratureQueries(input, generatedPlan.plan.queries, problemFrame);
     const searchSettings = literatureSearchSettings(input);
-    const searchQueries = normalizedQueries.accepted.slice(0, searchSettings.maxAcceptedQueries);
-    const deferredQueries = normalizedQueries.accepted.slice(searchSettings.maxAcceptedQueries);
+    const searchQueries = screenedQueries.accepted.slice(0, searchSettings.maxAcceptedQueries);
+    const deferredQueries = screenedQueries.accepted.slice(searchSettings.maxAcceptedQueries);
     if (searchQueries.length === 0) {
-      return this.missingGeneratedSearchPlan(input, task, generatedPlan, normalizedQueries.rejected);
+      return this.missingGeneratedSearchPlan(input, task, generatedPlan, screenedQueries.rejected);
     }
     input.onProgress?.({
       label: "Validate literature queries",
@@ -48,7 +49,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
         queryCount: searchQueries.length,
         queries: searchQueries.map((item) => `[${item.language}] ${item.query}`),
         deferredQueries: deferredQueries.map((item) => `[${item.language}] ${item.query}`),
-        rejectedQueries: normalizedQueries.rejected,
+        rejectedQueries: screenedQueries.rejected,
       },
     });
     const searchSteps = this.planSearchSteps(searchQueries);
@@ -76,6 +77,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
         query: item.query,
         language: "en",
         purpose: item.purpose,
+        disciplineScope: item.disciplineScope,
         tools: ["arxiv_search"],
       }));
       const roundResults = await this.searchArxiv(input, expansionSteps, searchSettings.perQueryLimit, round);
@@ -182,7 +184,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
               generatedQueryPlan: generatedPlan.plan,
               searchQueries,
               deferredQueries,
-              rejectedQueries: normalizedQueries.rejected,
+              rejectedQueries: screenedQueries.rejected,
               searchSteps,
               retrievalResults: summarizeRetrievalResults(retrievalResults),
               relevanceScreening: {
@@ -268,7 +270,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
                 searchQueries,
                 usefulPapers: usefulPapers.map(summarizeUsefulPaper),
                 referenceExpansionRounds: expansionSummaries,
-                rejectedQueries: normalizedQueries.rejected,
+                rejectedQueries: screenedQueries.rejected,
                 claimTable: input.literature?.renderClaimTable(),
                 conflictMap: input.literature?.renderConflictMap(),
               },
@@ -341,25 +343,38 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
     const task = input.plan.inputs.task as { question?: string } | undefined;
     const originalQuestion = task?.question ?? input.plan.objective;
     const prompt = [
-      "Generate a literature search query plan from the framed scientific problem.",
-      "This is a dedicated literature-review planning step. Do not rewrite the problem frame.",
+      "Generate candidate literature search queries from the framed scientific problem.",
+      "",
+      "Your job is to propose a diverse candidate query pool, not to write the final review.",
+      "",
+      "Use the framed problem to cover these retrieval intents:",
+      "1. broad conceptual background",
+      "2. mechanism / method / architecture",
+      "3. evaluation / benchmark / empirical evidence",
+      "4. limitations / failure modes / controversies",
+      "5. exact terminology or named concept, only when justified by the frame",
       "",
       `Discipline: ${problemFrame.discipline}`,
       `Language policy: primary=${problemFrame.languagePolicy.primarySearchLanguage}; input=${problemFrame.languagePolicy.inputLanguage}; reason=${problemFrame.languagePolicy.reason}`,
       originalQuestion && originalQuestion !== problemFrame.objective ? `Original user question: ${originalQuestion}` : "",
       "",
-      "Problem frame for query planning:",
+      "Problem frame:",
       problemFrame.renderedMarkdown,
       "",
       "Query rules:",
-      "- Return up to 10 English database-ready search strings. The runtime will keep at most 5 after validation.",
-      "- Prefer robust broad-to-focused queries over brittle one-off strings.",
-      "- Use exact phrases only when they appear in the user question or problem frame.",
-      "- Do not invent acronyms, abbreviations, benchmark names, paper names, method names, or aliases not present in the problem frame.",
-      "- Avoid over-specific synthetic phrases such as invented CamelCase names or unexplained abbreviations.",
-      "- Each query should be usable directly in arXiv/Semantic Scholar/Google Scholar style retrieval.",
-      "- Include at least one broad conceptual query, one mechanism/query about causes or methods, and one evaluation/limitation query when relevant.",
-      "- Do not return natural-language questions or instructions like 'find papers about'.",
+      "- Return up to 10 English database-ready search strings.",
+      "- For each query, include disciplineScope: the scientific/domain scope this query is intended to cover, e.g. artificial_intelligence, mathematics, physics, chemistry, chemical_engineering, cross_disciplinary, or a concise method-domain label such as artificial_intelligence/mechanistic_interpretability.",
+      "- Use disciplineScope to make coverage explicit; do not put discipline labels into the query string unless they are useful search terms.",
+      "- Each query must be directly usable in arXiv, Semantic Scholar, Google Scholar, or similar scholarly search.",
+      "- Prefer robust keyword-style queries over natural-language questions.",
+      "- Prefer broad-to-focused coverage rather than many near-duplicate narrow queries.",
+      "- Use exact quoted phrases only when the exact phrase appears in the original question or problem frame.",
+      "- Do not invent acronyms, paper names, benchmark names, method names, or aliases not present in the frame.",
+      "- Do not include instructions such as \"find papers about\".",
+      "- Do not include Chinese text in query strings.",
+      "- Do not include URLs.",
+      "- Do not include more than one very narrow exact-match query unless the frame explicitly requires it.",
+      "- If the framed problem is ambiguous, include one query that helps disambiguate the term.",
       "",
       schemaInstruction(LITERATURE_QUERY_PLAN_SCHEMA),
     ].join("\n");
@@ -372,9 +387,96 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
     return { raw, plan: await parseOrRepairLiteratureQueryPlan(raw, modelStep) };
   }
 
+  private async screenGeneratedLiteratureQueries(
+    input: SpecialistRunInput,
+    queries: LiteratureQueryPlanItem[],
+    problemFrame: ProblemFrameArtifactView,
+  ): Promise<{ accepted: NormalizedSearchQuery[]; rejected: Array<{ query: string; reason: string }> }> {
+    const candidateQueries = queries.map((item) => ({
+      purpose: item.purpose,
+      query: item.query,
+      scope: item.scope,
+      disciplineScope: item.disciplineScope,
+      rationale: item.rationale,
+    }));
+    const prompt = [
+      "Curate the final literature search query set for a scientific literature review.",
+      "",
+      "You are given:",
+      "1. the framed scientific problem",
+      "2. candidate queries generated by a query planner",
+      "",
+      "Your job is to produce the final retrieval set.",
+      "",
+      "Evaluate each candidate query for:",
+      "- relevance to the framed objective",
+      "- coverage of key variables and mechanisms",
+      "- likely retrieval precision",
+      "- likely retrieval recall",
+      "- redundancy with other queries",
+      "- risk of being too narrow, too broad, ambiguous, or noisy",
+      "- whether it introduces unsupported terminology",
+      "",
+      "Final query set requirements:",
+      "- Return exactly 5 final English database-ready search strings unless the problem is genuinely underspecified.",
+      "- If fewer than 5 candidate queries are high quality, generate replacement queries.",
+      "- The final set should balance:",
+      "  1. broad context",
+      "  2. mechanism / method",
+      "  3. evaluation / evidence",
+      "  4. limitations / failure modes / controversy",
+      "  5. exact term / disambiguation when justified",
+      "- For each final query, include disciplineScope: the scientific/domain scope this query is intended to cover, e.g. artificial_intelligence, mathematics, physics, chemistry, chemical_engineering, cross_disciplinary, or a concise method-domain label such as artificial_intelligence/mechanistic_interpretability.",
+      "- Use disciplineScope to make coverage explicit; do not put discipline labels into the query string unless they are useful search terms.",
+      "- Do not simply preserve the original candidate order.",
+      "- Do not include redundant variants of the same query.",
+      "- Do not include natural-language questions.",
+      "- Do not include instructions such as \"find papers about\".",
+      "- Do not include Chinese text in query strings.",
+      "- Do not invent acronyms, paper names, benchmark names, method names, or aliases not present in the framed problem unless they are clearly standard field terminology.",
+      "- Prefer queries that will retrieve papers, not blog posts or generic web pages.",
+      "",
+      "Problem frame:",
+      problemFrame.renderedMarkdown,
+      "",
+      "Candidate queries:",
+      JSON.stringify(candidateQueries, null, 2),
+      "",
+      schemaInstruction(QUERY_CURATION_SCHEMA),
+    ].join("\n");
+    const raw = await this.modelStep(input, {
+      stepId: "literature_query_curation_model",
+      system: "You are a strict scientific literature-search query curator. Return valid JSON only.",
+      prompt,
+      includeRenderedContext: false,
+      stream: false,
+    });
+    const curation = await parseOrRepairQueryCuration(raw, (options) => this.modelStep(input, options));
+    const normalized = curation.queries
+      .map((item) => normalizeCuratedQuery(item, problemFrame.languagePolicy))
+      .filter((item): item is NormalizedSearchQuery => Boolean(item));
+    const accepted = dedupeQueries(normalized).slice(0, 5);
+    input.onProgress?.({
+      label: "Curate literature queries",
+      detail: "Used an LLM query curator to judge candidate queries, replace weak ones, and produce the final search set.",
+      data: {
+        candidateCount: candidateQueries.length,
+        acceptedCount: accepted.length,
+        rejectedCount: curation.rejected.length,
+        acceptedQueries: accepted,
+        rejectedQueries: curation.rejected,
+        strategy: curation.strategy,
+      },
+    });
+    return {
+      accepted,
+      rejected: curation.rejected,
+    };
+  }
+
   private async searchArxiv(
     input: SpecialistRunInput,
-    steps: Array<{ index: number; query: string; language: string; purpose: string; tools: string[] }>,
+    steps: Array<{ index: number; query: string; language: string; purpose: string; disciplineScope?: string; tools: string[] }>,
     limit: number,
     round: number,
   ): Promise<RetrievalResult[]> {
@@ -390,6 +492,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       retrievalResults.push({
         query: step.query,
         purpose: step.purpose,
+        disciplineScope: step.disciplineScope,
         tool: "arxiv_search",
         status: arxivResult.status,
         output: arxivResult.output,
@@ -401,6 +504,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
         data: {
           language: step.language,
           purpose: step.purpose,
+          disciplineScope: step.disciplineScope,
           tools: ["arxiv_search"],
           status: arxivResult.status,
           resultCount: arxivResultCount(arxivResult.output),
@@ -539,7 +643,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
     return downloaded;
   }
 
-  private planSearchSteps(searchQueries: Array<{ query: string; language: string; purpose: string }>) {
+  private planSearchSteps(searchQueries: Array<{ query: string; language: string; purpose: string; disciplineScope?: string }>) {
     const tools = ["arxiv_search", "crossref_search", "pubmed_search"];
     return {
       tools,
@@ -548,6 +652,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
         query: item.query,
         language: item.language,
         purpose: item.purpose,
+        disciplineScope: item.disciplineScope,
         tools,
       })),
     };
@@ -629,6 +734,7 @@ interface LiteratureQueryPlanItem {
   purpose: string;
   query: string;
   scope: "broad" | "focused" | "exact";
+  disciplineScope: string;
   rationale: string;
 }
 
@@ -655,11 +761,28 @@ interface NormalizedSearchQuery {
   query: string;
   language: string;
   purpose: string;
+  disciplineScope: string;
+}
+
+interface CuratedLiteratureQuery {
+  query: string;
+  purpose: string;
+  coverageRole: string;
+  disciplineScope: string;
+  source: "kept" | "replaced" | "generated";
+  rationale: string;
+}
+
+interface QueryCurationResult {
+  strategy: string;
+  queries: CuratedLiteratureQuery[];
+  rejected: Array<{ query: string; reason: string }>;
 }
 
 interface RetrievalResult {
   query: string;
   purpose: string;
+  disciplineScope?: string;
   tool: string;
   status: string;
   output?: unknown;
@@ -680,9 +803,13 @@ interface LiteraturePaperCandidate {
   summary?: string;
   authors?: string[];
   publishedAt?: string;
+  categories?: string[];
+  score?: number;
+  citationCount?: number;
   sourceType: string;
   query: string;
   purpose: string;
+  disciplineScope?: string;
   discoveryRound: number;
   discoveryMethod: "query_search" | "reference_title_expansion";
 }
@@ -711,6 +838,7 @@ interface PaperRelevanceResult {
 interface ReferenceExpansionQuery {
   query: string;
   purpose: string;
+  disciplineScope?: string;
   seedPaperIds: string[];
   rationale: string;
 }
@@ -743,13 +871,17 @@ const LITERATURE_QUERY_PLAN_SCHEMA: StructuredSchema = {
         description: "Up to 10 candidate literature search queries before runtime validation.",
         items: {
           type: "object",
-          required: ["purpose", "query", "scope", "rationale"],
+          required: ["purpose", "query", "scope", "disciplineScope", "rationale"],
           properties: {
             purpose: { type: "string" },
             query: { type: "string" },
             scope: {
               type: "string",
               description: "One of: broad, focused, exact.",
+            },
+            disciplineScope: {
+              type: "string",
+              description: "Scientific/domain scope covered by this query, such as artificial_intelligence, mathematics, physics, chemistry, chemical_engineering, cross_disciplinary, or artificial_intelligence/mechanistic_interpretability.",
             },
             rationale: { type: "string" },
           },
@@ -803,6 +935,51 @@ const LITERATURE_EXTRACTION_SCHEMA: StructuredSchema = {
   },
 };
 
+const QUERY_CURATION_SCHEMA: StructuredSchema = {
+  name: "literature_query_curation",
+  description: "Final curated literature search queries selected or generated from candidate queries.",
+  schema: {
+    type: "object",
+    required: ["strategy", "queries", "rejected"],
+    properties: {
+      strategy: {
+        type: "string",
+        description: "Concise explanation of how the final query set covers the framed problem.",
+      },
+      queries: {
+        type: "array",
+        description: "Exactly 5 final search queries when possible.",
+        items: {
+          type: "object",
+          required: ["query", "purpose", "coverageRole", "disciplineScope", "source", "rationale"],
+          properties: {
+            query: { type: "string" },
+            coverageRole: { type: "string", description: "One of: broad_context, mechanism_method, evaluation_limitations, exact_term, background, reject." },
+            purpose: { type: "string" },
+            disciplineScope: {
+              type: "string",
+              description: "Primary discipline or method domain covered by this final query.",
+            },
+            source: { type: "string", description: "One of: kept, replaced, generated." },
+            rationale: { type: "string" },
+          },
+        },
+      },
+      rejected: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["query", "reason"],
+          properties: {
+            query: { type: "string" },
+            reason: { type: "string" },
+          },
+        },
+      },
+    },
+  },
+};
+
 const PAPER_RELEVANCE_SCHEMA: StructuredSchema = {
   name: "paper_relevance_screening",
   description: "Paper-level usefulness judgments against a framed research problem.",
@@ -839,10 +1016,11 @@ const REFERENCE_EXPANSION_QUERY_SCHEMA: StructuredSchema = {
         type: "array",
         items: {
           type: "object",
-          required: ["query", "purpose", "seedPaperIds", "rationale"],
+          required: ["query", "purpose", "disciplineScope", "seedPaperIds", "rationale"],
           properties: {
             query: { type: "string" },
             purpose: { type: "string" },
+            disciplineScope: { type: "string" },
             seedPaperIds: { type: "array", items: { type: "string" } },
             rationale: { type: "string" },
           },
@@ -885,6 +1063,7 @@ function coerceLiteratureQueryPlan(value: Record<string, unknown>): LiteratureQu
             purpose: asString(record.purpose),
             query: asString(record.query),
             scope: normalizeEnum(record.scope, ["broad", "focused", "exact"]),
+            disciplineScope: asString(record.disciplineScope),
             rationale: asString(record.rationale),
           };
         }).filter((item) => item.query)
@@ -896,7 +1075,7 @@ function coerceLiteratureQueryPlan(value: Record<string, unknown>): LiteratureQu
 async function extractStructuredLiteratureReview(
   summary: string,
   sourceContext: string,
-  searchQueries: Array<{ query: string; language: string; purpose: string }>,
+  searchQueries: Array<{ query: string; language: string; purpose: string; disciplineScope?: string }>,
   modelStep: ModelStepRunner,
 ): Promise<LiteratureStructuredExtraction | undefined> {
   const prompt = [
@@ -953,6 +1132,57 @@ async function parseOrRepairLiteratureExtraction(rawText: string, modelStep: Mod
       }
     }
   }
+}
+
+async function parseOrRepairQueryCuration(rawText: string, modelStep: ModelStepRunner): Promise<QueryCurationResult> {
+  try {
+    return coerceQueryCuration(parseStructuredOutput(rawText, QUERY_CURATION_SCHEMA));
+  } catch (error) {
+    try {
+      return coerceQueryCuration(salvageStructuredOutput(rawText, QUERY_CURATION_SCHEMA));
+    } catch {
+      const repaired = await modelStep({
+        stepId: "literature_query_curation_repair_model",
+        system: "You repair invalid literature query curation outputs into valid JSON.",
+        prompt: repairInstruction(
+          QUERY_CURATION_SCHEMA,
+          rawText,
+          error instanceof Error ? error.message : String(error),
+        ),
+        includeRenderedContext: false,
+        stream: false,
+      });
+      return coerceQueryCuration(parseStructuredOutput(repaired, QUERY_CURATION_SCHEMA));
+    }
+  }
+}
+
+function coerceQueryCuration(value: Record<string, unknown>): QueryCurationResult {
+  return {
+    strategy: asString(value.strategy),
+    queries: Array.isArray(value.queries)
+      ? value.queries.map((item) => {
+          const record = isRecord(item) ? item : {};
+          return {
+            query: asString(record.query),
+            purpose: asString(record.purpose),
+            coverageRole: asString(record.coverageRole) || "background",
+            disciplineScope: asString(record.disciplineScope),
+            source: normalizeEnum(record.source, ["kept", "replaced", "generated"]),
+            rationale: asString(record.rationale),
+          };
+        }).filter((item) => item.query)
+      : [],
+    rejected: Array.isArray(value.rejected)
+      ? value.rejected.map((item) => {
+          const record = isRecord(item) ? item : {};
+          return {
+            query: asString(record.query),
+            reason: asString(record.reason),
+          };
+        }).filter((item) => item.query)
+      : [],
+  };
 }
 
 async function parseOrRepairPaperRelevance(rawText: string, modelStep: ModelStepRunner): Promise<PaperRelevanceResult> {
@@ -1026,6 +1256,7 @@ function coerceReferenceExpansionQueries(value: Record<string, unknown>): Refere
           return {
             query: asString(record.query),
             purpose: asString(record.purpose) || "reference expansion",
+            disciplineScope: asString(record.disciplineScope),
             seedPaperIds: asStringArray(record.seedPaperIds),
             rationale: asString(record.rationale),
           };
@@ -1067,38 +1298,22 @@ function coerceLiteratureExtraction(value: Record<string, unknown>): LiteratureS
   };
 }
 
-function normalizeGeneratedLiteratureQueries(
-  queries: LiteratureQueryPlanItem[],
-  problemFrame: ProblemFrameArtifactView,
-): { accepted: NormalizedSearchQuery[]; rejected: Array<{ query: string; reason: string }> } {
-  const accepted: NormalizedSearchQuery[] = [];
-  const rejected: Array<{ query: string; reason: string }> = [];
-  const allowedTerms = buildAllowedSpecialTerms(problemFrame);
-  for (const item of queries) {
-    const normalized = normalizeGeneratedQuery(item, problemFrame.languagePolicy);
-    if (!normalized) continue;
-    const rejectionReason = queryQualityRejectionReason(normalized.query, allowedTerms);
-    if (rejectionReason) {
-      rejected.push({ query: normalized.query, reason: rejectionReason });
-      continue;
-    }
-    accepted.push(normalized);
-  }
-  return { accepted: dedupeQueries(accepted), rejected };
-}
-
 function collectCandidatePapers(results: RetrievalResult[], round: number, discoveryMethod: LiteraturePaperCandidate["discoveryMethod"]): LiteraturePaperCandidate[] {
   const candidates = results.flatMap((result) =>
-    arxivResultItems(result.output).map((item) => ({
-      id: item.id ?? item.link ?? `${result.query}:${item.title}`,
+    readLiteratureSearchPapers(result.output).map((item) => ({
+      id: item.id,
       title: item.title,
       link: item.link,
       summary: item.summary,
       authors: item.authors,
       publishedAt: item.publishedAt,
+      categories: item.categories,
+      score: item.score,
+      citationCount: item.citationCount,
       sourceType: result.tool,
       query: result.query,
       purpose: result.purpose,
+      disciplineScope: result.disciplineScope,
       discoveryRound: round,
       discoveryMethod,
     })),
@@ -1123,10 +1338,16 @@ function mergeUsefulPapers(existing: UsefulLiteraturePaper[], incoming: UsefulLi
 }
 
 function toReviewSynthesisSourcesFromPapers(papers: UsefulLiteraturePaper[]): LiteratureReviewSynthesisInput["retrievedSources"] {
-  const byQuery = new Map<string, { tool: string; query: string; purpose: string; papers: UsefulLiteraturePaper[] }>();
+  const byQuery = new Map<string, { tool: string; query: string; purpose: string; disciplineScope?: string; papers: UsefulLiteraturePaper[] }>();
   for (const paper of papers) {
-    const key = JSON.stringify([paper.sourceType, paper.query]);
-    const current = byQuery.get(key) ?? { tool: paper.sourceType, query: paper.query, purpose: paper.purpose, papers: [] };
+    const key = JSON.stringify([paper.sourceType, paper.query, paper.disciplineScope]);
+    const current = byQuery.get(key) ?? {
+      tool: paper.sourceType,
+      query: paper.query,
+      purpose: paper.purpose,
+      disciplineScope: paper.disciplineScope,
+      papers: [],
+    };
     current.papers.push(paper);
     byQuery.set(key, current);
   }
@@ -1134,6 +1355,7 @@ function toReviewSynthesisSourcesFromPapers(papers: UsefulLiteraturePaper[]): Li
     return {
       query: group.query,
       purpose: group.purpose,
+      disciplineScope: group.disciplineScope,
       tool: group.tool,
       status: "completed",
       results: group.papers.map((paper) => ({
@@ -1143,6 +1365,8 @@ function toReviewSynthesisSourcesFromPapers(papers: UsefulLiteraturePaper[]): Li
         summary: paper.summary,
         authors: paper.authors,
         publishedAt: paper.publishedAt,
+        categories: paper.categories,
+        citationCount: paper.citationCount,
         sourceType: paper.sourceType,
       })),
     };
@@ -1157,8 +1381,12 @@ function compactPaperForPrompt(paper: LiteraturePaperCandidate): Record<string, 
     summary: paper.summary?.slice(0, 900),
     authors: paper.authors?.slice(0, 6),
     publishedAt: paper.publishedAt,
+    categories: paper.categories,
+    score: paper.score,
+    citationCount: paper.citationCount,
     query: paper.query,
     purpose: paper.purpose,
+    disciplineScope: paper.disciplineScope,
     discoveryRound: paper.discoveryRound,
     discoveryMethod: paper.discoveryMethod,
   };
@@ -1172,6 +1400,9 @@ function summarizeUsefulPaper(paper: UsefulLiteraturePaper): Record<string, unkn
     relevance: paper.relevance,
     role: paper.role,
     reason: paper.relevanceReason,
+    score: paper.score,
+    citationCount: paper.citationCount,
+    disciplineScope: paper.disciplineScope,
     discoveryRound: paper.discoveryRound,
     discoveryMethod: paper.discoveryMethod,
     localPath: paper.localPath,
@@ -1206,9 +1437,13 @@ function renderUsefulPaperContext(papers: UsefulLiteraturePaper[]): string {
     lines.push(`- url: ${paper.link ?? "no url"}`);
     lines.push(`- local_pdf: ${paper.localPath ?? "not downloaded"}`);
     lines.push(`- discovery: ${paper.discoveryMethod}, round ${paper.discoveryRound}, query="${paper.query}"`);
+    if (paper.disciplineScope) lines.push(`- discipline_scope: ${paper.disciplineScope}`);
     lines.push(`- relevance: ${paper.relevance}; role=${paper.role}; reason=${paper.relevanceReason}`);
     if (paper.authors?.length) lines.push(`- authors: ${paper.authors.join(", ")}`);
     if (paper.publishedAt) lines.push(`- published: ${paper.publishedAt}`);
+    if (paper.categories?.length) lines.push(`- categories: ${paper.categories.join(", ")}`);
+    if (paper.score !== undefined) lines.push(`- retrieval_score: ${paper.score}`);
+    if (paper.citationCount !== undefined) lines.push(`- citation_count: ${paper.citationCount}`);
     if (paper.summary) lines.push(`abstract: ${paper.summary.slice(0, 900)}`);
     lines.push("");
   }
@@ -1217,16 +1452,16 @@ function renderUsefulPaperContext(papers: UsefulLiteraturePaper[]): string {
 
 function renderSearchPlanForPrompt(
   strategy: string,
-  queries: Array<{ query: string; language: string; purpose: string }>,
+  queries: Array<{ query: string; language: string; purpose: string; disciplineScope?: string }>,
 ): string {
   return [
     `- strategy: ${strategy || "Use accepted literature queries to cover the framed problem."}`,
-    ...queries.map((item, index) => `- query ${index + 1} [${item.language}]: ${item.query} - ${item.purpose}`),
+    ...queries.map((item, index) => `- query ${index + 1} [${item.language}; scope=${item.disciplineScope || "unspecified"}]: ${item.query} - ${item.purpose}`),
   ].join("\n");
 }
 
-function renderSearchQueriesForPrompt(queries: Array<{ query: string; language: string; purpose: string }>): string {
-  return queries.map((item, index) => `${index + 1}. [${item.language}] ${item.query} - ${item.purpose}`).join("\n");
+function renderSearchQueriesForPrompt(queries: Array<{ query: string; language: string; purpose: string; disciplineScope?: string }>): string {
+  return queries.map((item, index) => `${index + 1}. [${item.language}; scope=${item.disciplineScope || "unspecified"}] ${item.query} - ${item.purpose}`).join("\n");
 }
 
 function compactRetrievedSourceContext(sourceContext: string): string {
@@ -1254,7 +1489,25 @@ function normalizeGeneratedQuery(
     query,
     language: languagePolicy?.primarySearchLanguage ?? "en",
     purpose: item.purpose || `${item.scope} literature query`,
+    disciplineScope: item.disciplineScope || "unspecified",
   };
+}
+
+function normalizeCuratedQuery(
+  item: CuratedLiteratureQuery,
+  languagePolicy?: { primarySearchLanguage: string },
+): NormalizedSearchQuery | undefined {
+  const normalized = normalizeGeneratedQuery(
+    {
+      purpose: item.purpose || item.coverageRole,
+      query: item.query,
+      scope: "focused",
+      disciplineScope: item.disciplineScope,
+      rationale: item.rationale,
+    },
+    languagePolicy,
+  );
+  return normalized;
 }
 
 function dedupeQueries(queries: NormalizedSearchQuery[]): NormalizedSearchQuery[] {
@@ -1267,81 +1520,6 @@ function dedupeQueries(queries: NormalizedSearchQuery[]): NormalizedSearchQuery[
     unique.push(query);
   }
   return unique;
-}
-
-function queryQualityRejectionReason(query: string, allowedSpecialTerms: Set<string>): string | undefined {
-  const normalized = query.toLowerCase().replace(/\s+/g, " ").trim();
-  if (containsCjk(query)) return "Literature search queries must be English.";
-  if (normalized.length > 180) return "Query is too long to be a focused literature search string.";
-  if (/^(find|search|look for|look up|identify|understand|review|summarize|investigate)\b/.test(normalized)) {
-    return "Query must be concrete search terms, not an instruction.";
-  }
-  if (/\b(this topic|the topic|user query|research query|the problem|this problem)\b/.test(normalized)) {
-    return "Query must name the technical target explicitly.";
-  }
-  if (/^(what|why|how|when|where|which)\b/.test(normalized) || normalized.endsWith("?")) {
-    return "Query must be keyword-style search terms, not a natural-language question.";
-  }
-  const unsupportedSpecialTerms = inventedSpecialTerms(query, allowedSpecialTerms);
-  if (unsupportedSpecialTerms.length > 0) {
-    return `Query appears to introduce unsupported abbreviation or special name: ${unsupportedSpecialTerms.join(", ")}.`;
-  }
-  const tokens = normalized.match(/[a-z][a-z0-9-]{2,}/g) ?? [];
-  const generic = new Set([
-    "article",
-    "articles",
-    "current",
-    "evidence",
-    "latest",
-    "literature",
-    "method",
-    "methods",
-    "paper",
-    "papers",
-    "problem",
-    "query",
-    "recent",
-    "research",
-    "review",
-    "scientific",
-    "source",
-    "sources",
-    "studies",
-    "study",
-    "topic",
-  ]);
-  const specificTerms = tokens.filter((token) => !generic.has(token) && token.length >= 4);
-  const hasQuotedPhrase = /"[^"]{4,}"/.test(query);
-  if (specificTerms.length < 2 && !hasQuotedPhrase) {
-    return "Query must include at least two concrete technical terms or one quoted exact phrase.";
-  }
-  return undefined;
-}
-
-function inventedSpecialTerms(query: string, allowedSpecialTerms: Set<string>): string[] {
-  const tokens = query.match(/\b[A-Z][a-z]{1,}[A-Z][A-Za-z0-9]*\b|\b[A-Z]{2,}[a-z][A-Za-z0-9]*\b/g) ?? [];
-  return [...new Set(tokens.filter((token) => !allowedSpecialTerms.has(token.toLowerCase())))];
-}
-
-function buildAllowedSpecialTerms(problemFrame: ProblemFrameArtifactView): Set<string> {
-  const frame = problemFrame.structuredFrame;
-  const text = [
-    problemFrame.discipline,
-    asString(frame.objective),
-    asString(frame.scope),
-    ...asStringArray(frame.key_variables),
-    ...asStringArray(frame.constraints),
-    ...problemFrame.successCriteria,
-    ...asStringArray(frame.ambiguities),
-  ].filter(Boolean).join(" ");
-  const terms = new Set<string>();
-  for (const match of text.matchAll(/\b[A-Z][A-Za-z0-9-]{1,}\b|\b[A-Z][a-z]{1,}[A-Z][A-Za-z0-9]*\b/g)) {
-    terms.add(match[0].toLowerCase());
-  }
-  for (const match of text.matchAll(/"([^"]{3,80})"/g)) {
-    terms.add(match[1].toLowerCase());
-  }
-  return terms;
 }
 
 function containsCjk(text: string): boolean {
@@ -1410,36 +1588,38 @@ function arxivResultCount(output: unknown): number | undefined {
 }
 
 function arxivTopResults(output: unknown): Array<{ title: string; link?: string }> {
-  if (!isRecord(output) || !Array.isArray(output.results)) return [];
-  return output.results.slice(0, 3).map((item) => {
-    const record = isRecord(item) ? item : {};
-    return {
-      title: String(record.title ?? record.id ?? "Untitled source"),
-      link: typeof record.link === "string" ? record.link : typeof record.id === "string" ? record.id : undefined,
-    };
-  });
+  return readLiteratureSearchPapers(output).slice(0, 3).map((item) => ({
+    title: item.title,
+    link: item.link,
+  }));
 }
 
-function arxivResultItems(output: unknown): Array<{ id?: string; title: string; link?: string; summary?: string; authors?: string[]; publishedAt?: string }> {
+function readLiteratureSearchPapers(output: unknown): LiteratureSearchPaper[] {
   if (!isRecord(output) || !Array.isArray(output.results)) return [];
   return output.results.map((item) => {
     const record = isRecord(item) ? item : {};
+    const id = asString(record.id);
+    const title = asString(record.title);
     return {
-      id: typeof record.id === "string" ? record.id : undefined,
-      title: String(record.title ?? record.id ?? "Untitled source"),
-      link: typeof record.link === "string" ? record.link : typeof record.id === "string" ? record.id : undefined,
-      summary: typeof record.summary === "string" ? record.summary : typeof record.abstract === "string" ? record.abstract : undefined,
-      authors: Array.isArray(record.authors) ? record.authors.map(String) : undefined,
-      publishedAt: typeof record.publishedAt === "string" ? record.publishedAt : typeof record.published === "string" ? record.published : undefined,
+      id: id || `${title}:${asString(record.publishedAt)}`,
+      title: title || id || "Untitled source",
+      link: asString(record.link) || undefined,
+      summary: asString(record.summary) || undefined,
+      authors: asStringArray(record.authors),
+      publishedAt: asString(record.publishedAt) || undefined,
+      categories: asStringArray(record.categories),
+      score: asOptionalNumber(record.score),
+      citationCount: asOptionalNumber(record.citationCount),
     };
   });
 }
 
-function renderRetrievalContext(results: Array<{ query: string; purpose: string; tool: string; status: string; output?: unknown; error?: string }>): string {
+function renderRetrievalContext(results: Array<{ query: string; purpose: string; disciplineScope?: string; tool: string; status: string; output?: unknown; error?: string }>): string {
   const lines: string[] = [];
   for (const result of results) {
     lines.push(`## ${result.tool}: ${result.query}`);
     lines.push(`- purpose: ${result.purpose}`);
+    if (result.disciplineScope) lines.push(`- discipline_scope: ${result.disciplineScope}`);
     lines.push(`- status: ${result.status}`);
     if (result.error) lines.push(`- error: ${result.error}`);
     if (isRecord(result.output) && Array.isArray(result.output.results)) {
@@ -1454,10 +1634,11 @@ function renderRetrievalContext(results: Array<{ query: string; purpose: string;
   return lines.join("\n").trim();
 }
 
-function summarizeRetrievalResults(results: Array<{ query: string; purpose: string; tool: string; status: string; output?: unknown; error?: string }>) {
+function summarizeRetrievalResults(results: Array<{ query: string; purpose: string; disciplineScope?: string; tool: string; status: string; output?: unknown; error?: string }>) {
   return results.map((result) => ({
     query: result.query,
     purpose: result.purpose,
+    disciplineScope: result.disciplineScope,
     tool: result.tool,
     status: result.status,
     resultCount: arxivResultCount(result.output) ?? 0,
@@ -1494,6 +1675,11 @@ function asString(value: unknown): string {
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map(asString).filter(Boolean);
+}
+
+function asOptionalNumber(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function normalizeEnum<T extends string>(value: unknown, allowed: T[]): T {

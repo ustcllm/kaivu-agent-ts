@@ -1,6 +1,6 @@
 import type { ExperimentRunRecord } from "../execution/ExperimentExecutionLoop.js";
-import type { ResearchState } from "../shared/types.js";
-import type { EvidenceItem, HypothesisItem } from "../shared/types.js";
+import type { ResearchState } from "../shared/ResearchStateTypes.js";
+import type { EvidenceItem, HypothesisItem } from "../shared/StageContracts.js";
 
 export type ScientificSurpriseKind =
   | "contradictory_evidence"

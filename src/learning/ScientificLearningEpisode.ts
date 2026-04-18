@@ -1,7 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { makeId } from "../shared/ids.js";
-import type { ArtifactRef, ScientificTask } from "../shared/types.js";
+import type { ScientificTask } from "../shared/ScientificLifecycle.js";
+import type { ArtifactRef } from "../shared/StageContracts.js";
 import type { TrajectoryEvent } from "../loop/Trajectory.js";
 
 export const SCIENTIFIC_LEARNING_SCHEMA_VERSION = "1.0";

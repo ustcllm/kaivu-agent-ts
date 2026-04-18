@@ -1,4 +1,5 @@
-import type { ArtifactRef, EvidenceItem, HypothesisItem, ScientificStage } from "../shared/types.js";
+import type { ScientificStage } from "../shared/ScientificLifecycle.js";
+import type { ArtifactRef, EvidenceItem, HypothesisItem } from "../shared/StageContracts.js";
 
 export type ScientificEvaluationAxisId =
   | "problem_framing"

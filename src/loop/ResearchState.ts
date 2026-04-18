@@ -1,9 +1,9 @@
 import type {
-  ResearchState,
   ScientificStage,
   ScientificTask,
-  StageResult,
-} from "../shared/types.js";
+} from "../shared/ScientificLifecycle.js";
+import type { ResearchState } from "../shared/ResearchStateTypes.js";
+import type { StageResult } from "../shared/StageContracts.js";
 
 export function createInitialResearchState(task: ScientificTask, initialStage: ScientificStage): ResearchState {
   return {

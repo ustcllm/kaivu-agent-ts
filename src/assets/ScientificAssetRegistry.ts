@@ -1,7 +1,7 @@
 import type { ScientificEvaluationResult } from "../evaluation/ScientificEvaluationHarness.js";
 import type { ExperimentRunRecord } from "../execution/ExperimentExecutionLoop.js";
 import type { MemoryRecord } from "../memory/MemoryRecord.js";
-import type { ArtifactRef, EvidenceItem, HypothesisItem } from "../shared/types.js";
+import type { ArtifactRef, EvidenceItem, HypothesisItem } from "../shared/StageContracts.js";
 
 export type ScientificAssetKind =
   | "artifact"

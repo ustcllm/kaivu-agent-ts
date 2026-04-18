@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Tool } from "./ToolRegistry.js";
+import type { Tool } from "../ToolRegistry.js";
 
 export interface PaperDownloadToolOptions {
   root?: string;

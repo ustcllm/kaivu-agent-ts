@@ -1,12 +1,14 @@
 import type { LiteratureKnowledgeBase } from "../literature/LiteratureKnowledgeBase.js";
-import { createArxivSearchTool } from "./ArxivSearchTool.js";
-import { createPaperDownloadTool } from "./PaperDownloadTool.js";
+import { createArxivSearchTool } from "./tools/ArxivSearchTool.js";
+import { createPaperDownloadTool } from "./tools/PaperDownloadTool.js";
+import { createRagArxivRetrieveTool } from "./tools/RagArxivRetrieveTool.js";
 import { ToolRegistry, type Tool } from "./ToolRegistry.js";
 
 export function createResearchToolRegistry(literature: LiteratureKnowledgeBase): ToolRegistry {
   const registry = new ToolRegistry();
   const tools: Tool[] = [
     createArxivSearchTool(),
+    createRagArxivRetrieveTool(),
     createPaperDownloadTool(),
     {
       name: "query_literature_wiki",

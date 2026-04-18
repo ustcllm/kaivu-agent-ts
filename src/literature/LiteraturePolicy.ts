@@ -1,4 +1,4 @@
-import type { ConfidenceLevel, MemoryScope } from "../shared/types.js";
+import type { ConfidenceLevel, MemoryScope } from "../shared/MemoryTypes.js";
 
 export type LiteratureIngestMode = "auto" | "autonomous" | "guided" | "review_gated";
 export type LiteratureWriteTarget = "raw_source" | "digest_draft" | "ingest_proposal";

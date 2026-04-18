@@ -1,7 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { makeId } from "../shared/ids.js";
-import type { ArtifactRef, ScientificTask } from "../shared/types.js";
+import type { ScientificTask } from "../shared/ScientificLifecycle.js";
+import type { ArtifactRef } from "../shared/StageContracts.js";
 
 export interface RuntimeManifestModelUse {
   agentId: string;

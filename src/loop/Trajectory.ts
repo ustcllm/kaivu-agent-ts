@@ -1,6 +1,7 @@
 import type { RuntimeEvent } from "../runtime/RuntimeEvent.js";
 import { makeId } from "../shared/ids.js";
-import type { ScientificStage, StageResult } from "../shared/types.js";
+import type { ScientificStage } from "../shared/ScientificLifecycle.js";
+import type { StageResult } from "../shared/StageContracts.js";
 
 export interface TrajectoryEvent {
   id: string;

@@ -2,7 +2,8 @@ import type { SciAgent } from "../agent/SciAgent.js";
 import type { ResearchGraphRegistry } from "../graph/ResearchGraph.js";
 import type { SciMemory } from "../memory/SciMemory.js";
 import type { SciRuntime } from "../runtime/SciRuntime.js";
-import type { ResearchMode, ResearchState, ScientificTask } from "../shared/types.js";
+import type { ResearchMode, ScientificTask } from "../shared/ScientificLifecycle.js";
+import type { ResearchState } from "../shared/ResearchStateTypes.js";
 import { applyStageResult, createInitialResearchState } from "./ResearchState.js";
 import { ResearchTrajectory, type TrajectoryEvent } from "./Trajectory.js";
 

@@ -1,10 +1,10 @@
 import {
   DEFAULT_STAGE_ORDER,
-  type ResearchState,
   type ScientificStage,
   type ScientificTask,
-  type StagePlan,
-} from "../shared/types.js";
+} from "../shared/ScientificLifecycle.js";
+import type { ResearchState } from "../shared/ResearchStateTypes.js";
+import type { StagePlan } from "../shared/StageContracts.js";
 import type { SpecialistAgent } from "./SpecialistAgent.js";
 
 export interface SciAgentConfig {

@@ -7,7 +7,7 @@ import type {
   MemoryWriteProposal,
   PromotionStatus,
   VisibilityLevel,
-} from "../shared/types.js";
+} from "../shared/MemoryTypes.js";
 import type {
   MemoryCommitResult,
   MemoryLogEntry,

@@ -1,5 +1,6 @@
 import { makeId } from "../../shared/ids.js";
-import type { ScientificTask, StageResult } from "../../shared/types.js";
+import type { ScientificTask } from "../../shared/ScientificLifecycle.js";
+import type { StageResult } from "../../shared/StageContracts.js";
 import {
   parseStructuredOutput,
   repairInstruction,
@@ -45,16 +46,54 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
     const groundingContext = buildGroundingContext(groundingResults, groundingTargets);
     const languagePolicy = detectLanguagePolicy(task.question);
     const framingPrompt = [
-      "Frame this scientific research problem.",
-      `Question: ${task.question}`,
-      `Initial discipline hint: ${disciplineHint}. If the hint is "to_be_determined", infer the discipline from the grounded problem.`,
-      "The returned discipline is the official downstream discipline label for literature review, hypothesis generation, and experiment planning.",
-      "Use one discipline label from: artificial_intelligence, mathematics, chemistry, chemical_engineering, physics, general_science, unknown.",
+      "Frame the user request as a scientific research problem.",
+      "",
+      "Your job is to produce a minimal, decision-useful problem frame for downstream literature review, hypothesis generation, and experiment planning.",
+      "",
+      "Do not answer the research question.",
+      "Do not generate literature search queries.",
+      "Do not generate hypotheses.",
+      "Do not propose experiments.",
+      "Do not write a review.",
+      "",
+      "Input:",
+      "Original user question:",
+      task.question,
+      "",
+      "Initial discipline hint:",
+      disciplineHint,
+      "",
+      "If the hint is \"to_be_determined\", infer the discipline from the user question and grounding context.",
+      "",
+      "Allowed discipline labels:",
+      "- artificial_intelligence",
+      "- mathematics",
+      "- chemistry",
+      "- chemical_engineering",
+      "- physics",
+      "- general_science",
+      "- unknown",
+      "",
       groundingContext
         ? `Concept grounding context:\n${groundingContext}`
         : "Concept grounding context: no grounded context is available; explicitly mark uncertain terminology as assumptions.",
+      "",
+      "Framing requirements:",
+      "- Identify the most likely scientific interpretation of the user request.",
+      "- If key terms are ambiguous, state the ambiguity explicitly.",
+      "- Convert the user request into a specific research objective.",
+      "- Define the scope narrowly enough for literature review and hypothesis generation.",
+      "- Extract key variables, mechanisms, objects, systems, methods, datasets, observables, or constraints mentioned or implied by the request.",
+      "- State assumptions only when necessary, and mark them as assumptions.",
+      "- Define success criteria that can later be evaluated by evidence, experiments, simulations, proofs, or benchmarks.",
+      "- Preserve important user intent from the original wording.",
+      "- If the question is too broad, narrow it conservatively instead of expanding it.",
+      "- If the evidence basis is uncertain, reflect that in ambiguities or constraints.",
+      "- Keep the output concise and structured.",
+      "",
+      "Return valid JSON following the schema.",
+      "",
       schemaInstruction(PROBLEM_FRAME_SCHEMA),
-      "Do not generate literature search queries in this stage. Literature review will generate its own query plan from this frame.",
     ].join("\n");
     const rawSummary = await this.modelStep(input, {
       stepId: this.id,

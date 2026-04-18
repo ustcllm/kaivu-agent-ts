@@ -1,4 +1,4 @@
-import type { MemoryScope, VisibilityLevel } from "../shared/types.js";
+import type { MemoryScope, VisibilityLevel } from "../shared/MemoryTypes.js";
 import type { MemoryRecord } from "./MemoryRecord.js";
 import type { SciMemory } from "./SciMemory.js";
 

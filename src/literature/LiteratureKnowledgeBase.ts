@@ -1,5 +1,5 @@
 import { makeId } from "../shared/ids.js";
-import type { MemoryWriteProposal } from "../shared/types.js";
+import type { MemoryWriteProposal } from "../shared/MemoryTypes.js";
 import {
   decideLiteratureIngestPolicy,
   renderLiteratureDigest,
@@ -68,10 +68,11 @@ export interface LiteratureConflictGroup {
 export interface LiteratureReviewSynthesisInput {
   topic: string;
   summaryMarkdown: string;
-  queries: Array<{ query: string; purpose?: string; language?: string }>;
+  queries: Array<{ query: string; purpose?: string; language?: string; disciplineScope?: string }>;
   retrievedSources: Array<{
     query: string;
     purpose?: string;
+    disciplineScope?: string;
     tool: string;
     status: string;
     results: Array<{
@@ -205,6 +206,7 @@ export class LiteratureKnowledgeBase {
           metadata: {
             query: batch.query,
             purpose: batch.purpose,
+            disciplineScope: batch.disciplineScope,
             tool: batch.tool,
             retrievalStatus: batch.status,
           },

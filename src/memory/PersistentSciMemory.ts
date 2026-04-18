@@ -8,7 +8,7 @@ import type {
   MemoryReviewInput,
 } from "./MemoryRecord.js";
 import { SciMemory } from "./SciMemory.js";
-import type { MemoryWriteProposal } from "../shared/types.js";
+import type { MemoryWriteProposal } from "../shared/MemoryTypes.js";
 
 export interface PersistentMemorySnapshot {
   schemaVersion: "kaivu-memory-v1";

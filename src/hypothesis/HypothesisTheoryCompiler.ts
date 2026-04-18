@@ -1,4 +1,4 @@
-import type { HypothesisItem } from "../shared/types.js";
+import type { HypothesisItem } from "../shared/StageContracts.js";
 
 export interface TheoryVariable {
   name: string;

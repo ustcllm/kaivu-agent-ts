@@ -1,4 +1,4 @@
-import type { StageResult } from "../../shared/types.js";
+import type { StageResult } from "../../shared/StageContracts.js";
 import { BaseSpecialistAgent, type SpecialistRunInput } from "../SpecialistAgent.js";
 
 export class ExperimentDesignAgent extends BaseSpecialistAgent {

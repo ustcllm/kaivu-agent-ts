@@ -1,4 +1,5 @@
-import type { Tool } from "./ToolRegistry.js";
+import type { Tool } from "../ToolRegistry.js";
+import type { LiteratureSearchOutput, LiteratureSearchPaper } from "../../shared/LiteratureSearchTypes.js";
 
 export interface ArxivSearchToolOptions {
   endpoint?: string;
@@ -6,21 +7,8 @@ export interface ArxivSearchToolOptions {
   timeoutMs?: number;
 }
 
-export interface ArxivSearchResult {
-  id: string;
-  title: string;
-  summary: string;
-  authors: string[];
-  published?: string;
-  updated?: string;
-  link?: string;
-  categories: string[];
-}
-
-export interface ArxivSearchOutput {
-  query: string;
-  results: ArxivSearchResult[];
-}
+export type ArxivSearchResult = LiteratureSearchPaper;
+export type ArxivSearchOutput = LiteratureSearchOutput;
 
 export function createArxivSearchTool(options: ArxivSearchToolOptions = {}): Tool {
   const endpoint = options.endpoint ?? process.env.ARXIV_SEARCH_ENDPOINT ?? "https://export.arxiv.org/api/query";
@@ -66,18 +54,20 @@ function clampResultLimit(value: unknown, fallback: number): number {
   return Math.min(25, Math.max(1, Math.floor(parsed)));
 }
 
-function parseArxivAtom(xml: string): ArxivSearchResult[] {
+function parseArxivAtom(xml: string): LiteratureSearchPaper[] {
   const entries = [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)].map((match) => match[1]);
-  return entries.map((entry) => ({
-    id: textContent(entry, "id"),
-    title: normalizeXmlText(textContent(entry, "title")),
-    summary: normalizeXmlText(textContent(entry, "summary")),
-    authors: [...entry.matchAll(/<author>\s*<name>([\s\S]*?)<\/name>\s*<\/author>/g)].map((match) => decodeXml(match[1].trim())),
-    published: textContent(entry, "published") || undefined,
-    updated: textContent(entry, "updated") || undefined,
-    link: firstAlternateLink(entry),
-    categories: [...entry.matchAll(/<category\s+term="([^"]+)"/g)].map((match) => decodeXml(match[1])),
-  }));
+  return entries.map((entry) => {
+    const id = textContent(entry, "id");
+    return {
+      id,
+      title: normalizeXmlText(textContent(entry, "title")) || id || "Untitled paper",
+      summary: normalizeXmlText(textContent(entry, "summary")) || undefined,
+      authors: [...entry.matchAll(/<author>\s*<name>([\s\S]*?)<\/name>\s*<\/author>/g)].map((match) => decodeXml(match[1].trim())),
+      publishedAt: textContent(entry, "published") || undefined,
+      link: firstAlternateLink(entry) || id || undefined,
+      categories: [...entry.matchAll(/<category\s+term="([^"]+)"/g)].map((match) => decodeXml(match[1])),
+    };
+  });
 }
 
 function textContent(xml: string, tag: string): string {

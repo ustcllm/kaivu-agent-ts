@@ -1,4 +1,4 @@
-import type { ScientificStage, ScientificTask } from "../shared/types.js";
+import type { ScientificStage, ScientificTask } from "../shared/ScientificLifecycle.js";
 
 export type ResearchCampaignStage =
   | "question_framing"

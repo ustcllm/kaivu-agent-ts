@@ -1,4 +1,4 @@
-import type { ScientificStage } from "../shared/types.js";
+import type { ScientificStage } from "../shared/ScientificLifecycle.js";
 
 export interface ScientificContextPolicyInput {
   topic: string;

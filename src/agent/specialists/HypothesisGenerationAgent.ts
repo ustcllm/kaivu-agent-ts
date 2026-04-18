@@ -1,5 +1,6 @@
 import { makeId } from "../../shared/ids.js";
-import type { ResearchState, StageResult } from "../../shared/types.js";
+import type { ResearchState } from "../../shared/ResearchStateTypes.js";
+import type { StageResult } from "../../shared/StageContracts.js";
 import {
   parseStructuredOutput,
   repairInstruction,

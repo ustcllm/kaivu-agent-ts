@@ -13,7 +13,7 @@ import { OpenAIAuthService } from "../auth/OpenAIAuthService.js";
 import { ScientificCapabilityRegistry } from "../capabilities/ScientificCapabilityRegistry.js";
 import { ResearchGraphRegistry } from "../graph/ResearchGraph.js";
 import { LiteratureKnowledgeBase } from "../literature/LiteratureKnowledgeBase.js";
-import type { ResearchState } from "../shared/types.js";
+import type { ResearchState } from "../shared/ResearchStateTypes.js";
 import { SciLoop } from "../loop/SciLoop.js";
 import type { TrajectoryEvent } from "../loop/Trajectory.js";
 import { SciMemory } from "../memory/SciMemory.js";
@@ -28,7 +28,7 @@ import {
 } from "../runtime/ModelProvider.js";
 import { createResearchToolRegistry } from "../runtime/ResearchToolRegistry.js";
 import { SciRuntime } from "../runtime/SciRuntime.js";
-import type { ResearchMode, ScientificTask, ScientificStage } from "../shared/types.js";
+import type { ResearchMode, ScientificTask, ScientificStage } from "../shared/ScientificLifecycle.js";
 import type { AuthIdentity, AuthSession } from "../auth/AuthSession.js";
 
 export interface KaivuApiServerOptions {

@@ -1,4 +1,4 @@
-import type { ArtifactRef, EvidenceItem, HypothesisItem, ScientificDecision } from "../shared/types.js";
+import type { ArtifactRef, EvidenceItem, HypothesisItem, ScientificDecision } from "../shared/StageContracts.js";
 
 export type ExperimentExecutionState =
   | "candidate"

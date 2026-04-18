@@ -6,7 +6,7 @@ import type {
   MemoryStatus,
   PromotionStatus,
   VisibilityLevel,
-} from "../shared/types.js";
+} from "../shared/MemoryTypes.js";
 
 export interface MemoryRecord {
   id: string;
