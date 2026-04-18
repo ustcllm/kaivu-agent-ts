@@ -55,6 +55,12 @@ export interface ResearchRunBody {
   stageOrder?: ScientificStage[];
   pauseAfterStage?: boolean;
   initialState?: ResearchState;
+  stageInteraction?: StageInteractionRequest;
+}
+
+export interface StageInteractionRequest {
+  action: "revise_current_stage" | "proceed_to_next_stage";
+  message?: string;
 }
 
 export class KaivuApiServer {
@@ -147,9 +153,7 @@ export class KaivuApiServer {
       stageOrder: body.stageOrder ?? ["problem_framing", "literature_review", "hypothesis_generation", "hypothesis_validation", "experiment_design"],
     });
     const loop = new SciLoop(runtime, memory, graph);
-    const initialState = body.initialState?.stopReason?.startsWith("paused_after_")
-      ? { ...body.initialState, done: false, stopReason: undefined }
-      : body.initialState;
+    const initialState = prepareInteractiveState(body.initialState, body.stageInteraction);
     return await loop.run({
       task,
       agent,
@@ -703,5 +707,45 @@ function taskFromQuery(query: string): ScientificTask {
     title: question.slice(0, 80) || "Untitled research task",
     question,
     taskType: "chat_research",
+  };
+}
+
+function prepareInteractiveState(
+  state: ResearchState | undefined,
+  interaction: StageInteractionRequest | undefined,
+): ResearchState | undefined {
+  if (!state) return undefined;
+  const unpaused = state.stopReason?.startsWith("paused_after_")
+    ? { ...state, done: false, stopReason: undefined }
+    : { ...state };
+  if (!interaction) return unpaused;
+
+  const completedStage = unpaused.completedStages.at(-1);
+  const targetStage = interaction.action === "revise_current_stage"
+    ? completedStage ?? unpaused.currentStage
+    : unpaused.currentStage;
+  const message = interaction.message?.trim();
+  const pendingStageInputs = { ...(unpaused.pendingStageInputs ?? {}) };
+  if (message) {
+    const sourceStage = interaction.action === "revise_current_stage"
+      ? targetStage
+      : completedStage ?? unpaused.currentStage;
+    pendingStageInputs[targetStage] = [
+      ...(pendingStageInputs[targetStage] ?? []),
+      {
+        id: `stage_input_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: new Date().toISOString(),
+        sourceStage,
+        targetStage,
+        action: interaction.action,
+        message,
+      },
+    ];
+  }
+
+  return {
+    ...unpaused,
+    currentStage: targetStage,
+    pendingStageInputs,
   };
 }

@@ -15,6 +15,7 @@ export function createInitialResearchState(task: ScientificTask, initialStage: S
     hypotheses: [],
     artifacts: [],
     artifactRefs: [],
+    pendingStageInputs: {},
     blockers: [],
     done: false,
   };
@@ -34,6 +35,10 @@ export function applyStageResult(state: ResearchState, result: StageResult, fall
     hypotheses: [...state.hypotheses, ...result.hypotheses],
     artifacts: [...state.artifacts, ...result.artifacts.map((artifact) => artifact.id)],
     artifactRefs: [...(state.artifactRefs ?? []), ...result.artifacts],
+    pendingStageInputs: {
+      ...(state.pendingStageInputs ?? {}),
+      [result.stage]: [],
+    },
     done,
     stopReason: done ? result.decision.reason : state.stopReason,
   };

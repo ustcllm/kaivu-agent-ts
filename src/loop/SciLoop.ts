@@ -84,7 +84,7 @@ export class SciLoop {
           review: input.pauseAfterStage
             ? {
                 required: true,
-                message: "Review this stage output before continuing to the next research stage.",
+                message: "Review this stage output. Continue the current stage with notes, or continue to the next stage with optional handoff notes.",
               }
             : {
                 required: false,

@@ -60,14 +60,16 @@ export abstract class BaseSpecialistAgent implements SpecialistAgent {
     options: ModelStepOptions,
   ): Promise<string> {
     const system = options.system ?? `You are ${this.id}, a stage specialist in a scientific research agent.`;
+    const stageUserInputContext = renderStageUserInputContext(input.plan.inputs.stageUserInputs);
     const contextualPrompt = options.includeRenderedContext !== false && input.renderedContext
       ? [
           input.renderedContext,
+          stageUserInputContext,
           "",
           "# Current Stage Task",
           options.prompt,
-        ].join("\n")
-      : options.prompt;
+        ].filter(Boolean).join("\n")
+      : [stageUserInputContext, options.prompt].filter(Boolean).join("\n\n");
     input.onModelPrompt?.({
       specialistId: options.stepId ?? this.id,
       system,
@@ -93,4 +95,25 @@ export abstract class BaseSpecialistAgent implements SpecialistAgent {
     return completion.text;
   }
 
+}
+
+function renderStageUserInputContext(value: unknown): string {
+  if (!Array.isArray(value) || value.length === 0) return "";
+  const messages = value
+    .map((item, index) => {
+      if (!item || typeof item !== "object") return "";
+      const record = item as Record<string, unknown>;
+      const message = typeof record.message === "string" ? record.message.trim() : "";
+      if (!message) return "";
+      const action = typeof record.action === "string" ? record.action : "stage_input";
+      const sourceStage = typeof record.sourceStage === "string" ? record.sourceStage : "unknown";
+      return `${index + 1}. [${action} from ${sourceStage}] ${message}`;
+    })
+    .filter(Boolean);
+  if (messages.length === 0) return "";
+  return [
+    "# User Input For This Stage",
+    "Use these user-provided notes, corrections, constraints, or source hints when producing this stage output.",
+    ...messages,
+  ].join("\n");
 }

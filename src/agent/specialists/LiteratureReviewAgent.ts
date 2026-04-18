@@ -323,7 +323,11 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
   }
 
   private findProblemFrameArtifact(input: SpecialistRunInput): ArtifactRef | undefined {
-    return input.researchState.artifactRefs.find((artifact) => artifact.id === "problem_frame");
+    for (let index = input.researchState.artifactRefs.length - 1; index >= 0; index -= 1) {
+      const artifact = input.researchState.artifactRefs[index];
+      if (artifact.id === "problem_frame") return artifact;
+    }
+    return undefined;
   }
 
   protected override renderResultMarkdown(result: unknown): string {
@@ -356,7 +360,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       "5. exact terminology or named concept, only when justified by the frame",
       "",
       `Discipline: ${problemFrame.discipline}`,
-      `Language policy: primary=${problemFrame.languagePolicy.primarySearchLanguage}; input=${problemFrame.languagePolicy.inputLanguage}; reason=${problemFrame.languagePolicy.reason}`,
+      "Output/query language: English.",
       `Original user question: ${originalQuestion}`,
       "",
       "Problem frame:",
@@ -370,9 +374,12 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       "- Each query must be directly usable in arXiv, Semantic Scholar, Google Scholar, or similar scholarly search.",
       "- Prefer robust keyword-style queries over natural-language questions.",
       "- Prefer broad-to-focused coverage rather than many near-duplicate narrow queries.",
+      "- Include at least one broad/context query unless the framed problem is already extremely narrow.",
       "- Use exact quoted phrases only when the exact phrase appears in the original question or problem frame.",
-      "- If the original user question includes paper links, use any available linked-paper context such as title, abstract, and reference/related-work direction as retrieval anchors; do not include URLs in query strings.",
-      "- Do not invent acronyms, paper names, benchmark names, method names, or aliases not present in the frame.",
+      "- If the original user question includes paper links, treat them as source, baseline, and terminology anchors.",
+      "- Include at most one source-anchor query aimed at recovering the linked paper or its exact terminology; do not include URLs in query strings.",
+      "- Use the remaining queries to explore related mechanisms, method families, evaluations, limitations, and improvement directions from the framed problem.",
+      "- Do not invent obscure acronyms, paper names, benchmark names, method names, or aliases. Standard field terminology is allowed when supported by the framed problem or original question.",
       "- Do not include instructions such as \"find papers about\".",
       "- Do not include Chinese text in query strings.",
       "- Do not include URLs.",

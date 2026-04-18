@@ -52,6 +52,7 @@ export class SciAgent {
         task,
         discipline,
         researchState,
+        stageUserInputs: researchState.pendingStageInputs?.[stage] ?? [],
       },
       expectedOutputs: this.expectedOutputs(stage),
       requiredCapabilities: this.requiredCapabilities(stage),

@@ -40,7 +40,11 @@ let canSaveCurrentStage = false;
 
 continueButton.addEventListener("click", () => {
   if (!pendingReview || activeController) return;
-  runResearchTurn("", { showUserMessage: false, applyFeedback: false });
+  const note = queryInput.value.trim();
+  runResearchTurn(note, {
+    showUserMessage: Boolean(note),
+    stageInteractionAction: "proceed_to_next_stage",
+  });
 });
 
 saveFixtureButton.addEventListener("click", () => {
@@ -85,11 +89,15 @@ chatForm.addEventListener("submit", async (event) => {
   }
 
   const query = queryInput.value.trim();
-  if (!query) return;
-  await runResearchTurn(query, { showUserMessage: true });
+  if (!query && !pendingReview) return;
+  await runResearchTurn(query, {
+    showUserMessage: Boolean(query),
+    stageInteractionAction: pendingReview ? "revise_current_stage" : undefined,
+  });
 });
 
 async function runResearchTurn(query, options = {}) {
+  const reviewForRequest = pendingReview;
   if (options.showUserMessage !== false) {
     appendMessage("user", query);
   }
@@ -120,14 +128,18 @@ async function runResearchTurn(query, options = {}) {
   }, 1000);
 
   try {
-    const body = pendingReview
+    const body = reviewForRequest
       ? {
           model: modelSelect.value,
-          task: options.applyFeedback === false ? pendingReview.task : taskWithFeedback(pendingReview.task, query),
-          initialState: pendingReview.state,
+          task: reviewForRequest.task,
+          initialState: reviewForRequest.state,
           mode: "interactive",
           maxIterations: 1,
           pauseAfterStage: true,
+          stageInteraction: {
+            action: options.stageInteractionAction ?? "revise_current_stage",
+            message: query,
+          },
         }
         : {
           model: modelSelect.value,
@@ -163,6 +175,11 @@ async function runResearchTurn(query, options = {}) {
       updateFixtureControls();
     }
   } catch (error) {
+    if (reviewForRequest) {
+      pendingReview = reviewForRequest;
+      canSaveCurrentStage = true;
+      updateContinueButton(true);
+    }
     if (error instanceof Error && error.name === "AbortError") {
       updateStatusOnly(
         statusMessage,
@@ -183,17 +200,6 @@ async function runResearchTurn(query, options = {}) {
     setBusy(false);
     updateFixtureControls();
   }
-}
-
-function taskWithFeedback(task, feedback) {
-  const existing = Array.isArray(task?.constraints?.reviewFeedback) ? task.constraints.reviewFeedback : [];
-  return {
-    ...task,
-    constraints: {
-      ...(task?.constraints || {}),
-      reviewFeedback: [...existing, feedback],
-    },
-  };
 }
 
 function loadSelectedFixture(fixture) {
@@ -916,7 +922,7 @@ function finalConclusion(state) {
 
 function setBusy(busy) {
   document.body.classList.toggle("is-running", busy);
-  sendButton.textContent = busy ? "Cancel" : "Send";
+  sendButton.textContent = busy ? "Cancel" : pendingReview ? "Continue current stage" : "Start research";
   queryInput.disabled = busy;
   continueButton.disabled = busy || !pendingReview;
   saveFixtureButton.disabled = busy || !pendingReview || !canSaveCurrentStage;
@@ -927,6 +933,10 @@ function setBusy(busy) {
 function updateContinueButton(visible) {
   continueButton.hidden = !visible;
   continueButton.disabled = !visible || Boolean(activeController);
+  sendButton.textContent = activeController ? "Cancel" : pendingReview ? "Continue current stage" : "Start research";
+  queryInput.placeholder = pendingReview
+    ? "Add notes for the current stage, or write handoff notes before continuing to the next stage..."
+    : "Ask Kaivu to investigate a scientific question...";
 }
 
 function saveStageFixture(review) {
@@ -1049,7 +1059,7 @@ function renderFixtureLoadedMessage(fixture) {
   const hypothesisCount = Array.isArray(state.hypotheses) ? state.hypotheses.length : 0;
   return `
     <strong>Kaivu</strong>
-    <p>Loaded saved fixture. Click <b>Continue next stage</b> to run <code>${escapeHtml(String(fixture.resumeStage || "next stage"))}</code> using the frozen upstream state.</p>
+    <p>Loaded saved fixture. Use <b>Continue current stage</b> to revise the last completed stage, or <b>Continue next stage</b> to run <code>${escapeHtml(String(fixture.resumeStage || "next stage"))}</code> using the frozen upstream state.</p>
     <section class="fixture-summary">
       <dl class="process-details">
         ${renderDetailRow("saved at", formatFixtureDate(fixture.savedAt))}
