@@ -19,7 +19,7 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
     const task = input.plan.inputs.task as ScientificTask;
     const disciplineHint = String(input.plan.inputs.discipline ?? task.discipline ?? "to_be_determined");
     const groundingDiscipline = knownDisciplineForGrounding(disciplineHint);
-    const groundingPlan = planQueryGrounding(task.question);
+    const groundingPlan = planQueryGrounding(input);
     input.onProgress?.({
       label: "Interpret user query",
       detail: "Prepared the query for a separate grounding-target selection step before problem framing.",
@@ -36,13 +36,7 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
     const modelStep = (options: ModelStepOptions) => this.modelStep(input, options);
     const groundingTargets = await selectGroundingTargets(input, groundingPlan, groundingDiscipline, modelStep);
     const groundingDisciplineContext = groundingDisciplineContextFor(groundingDiscipline, groundingTargets.discipline);
-    const groundingResults = await groundQueryConcepts(
-      input,
-      groundingTargets,
-      task.question,
-      groundingDisciplineContext,
-      modelStep,
-    );
+    const groundingResults = await groundQueryConcepts(input, groundingTargets, groundingDisciplineContext, modelStep);
     const groundingContext = buildGroundingContext(groundingResults, groundingTargets);
     const languagePolicy = detectLanguagePolicy(task.question);
     const framingPrompt = [
@@ -56,6 +50,11 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
       "Do not propose experiments.",
       "Do not write a review.",
       "",
+      "Research framing boundary:",
+      "- Use any existing source, method, result, system, theory, or artifact mentioned by the user as context for the research task.",
+      "- Do not make the frame primarily a summary or interpretation of that existing object.",
+      "- Separate what is already given from what remains to be investigated, compared, explained, improved, validated, generalized, or decided.",
+      "",
       "Input:",
       "Original user question:",
       task.question,
@@ -64,6 +63,9 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
       disciplineHint,
       "",
       "If the hint is \"to_be_determined\", infer the discipline from the user question and grounding context.",
+      "",
+      "Output language policy:",
+      renderProblemFrameOutputLanguagePolicy(languagePolicy),
       "",
       "Allowed discipline labels:",
       "- artificial_intelligence",
@@ -259,7 +261,6 @@ interface LanguagePolicy {
 }
 
 interface GroundingPlan {
-  query: string;
   needsGrounding: boolean;
   reason: string;
   requireHostedWebSearch: boolean;
@@ -407,7 +408,7 @@ async function parseOrRepairProblemFrame(input: SpecialistRunInput, rawText: str
 }
 
 function fallbackProblemFrame(rawText: string, question: string, disciplineHint?: string): ProblemFrame {
-  const seed = normalizeGroundingFallbackQuery(question) ?? question.split(/\s+/).filter((token) => token.length > 3).slice(0, 4).join(" ");
+  const seed = question.split(/\s+/).filter((token) => token.length > 3).slice(0, 4).join(" ");
   return {
     discipline: normalizeDisciplineLabel(disciplineHint ?? "") || "unknown",
     memory_summary: question || "Fallback problem framing requires review.",
@@ -467,6 +468,11 @@ function renderList(items: string[]): string[] {
   return items.length > 0 ? items.map((item) => `- ${item}`) : ["- none"];
 }
 
+function renderProblemFrameOutputLanguagePolicy(policy: LanguagePolicy): string {
+  void policy;
+  return "Write narrative fields in English. Preserve user-provided technical terms, paper titles, method names, URLs, and identifiers in their original form.";
+}
+
 interface GroundingResult {
   term: string;
   tool: string;
@@ -474,13 +480,13 @@ interface GroundingResult {
   summary: string;
 }
 
-function planQueryGrounding(question: string): GroundingPlan {
-  const fallbackQuery = normalizeGroundingFallbackQuery(question);
+function planQueryGrounding(input: SpecialistRunInput): GroundingPlan {
+  const task = input.plan.inputs.task as ScientificTask;
+  const question = task.question.trim();
   return {
-    query: fallbackQuery ?? "",
-    needsGrounding: Boolean(fallbackQuery),
-    requireHostedWebSearch: Boolean(fallbackQuery),
-    reason: fallbackQuery
+    needsGrounding: question.length >= 4,
+    requireHostedWebSearch: question.length >= 4,
+    reason: question.length >= 4
       ? "The user query will first be analyzed to select exact grounding targets, then each selected target will be grounded separately."
       : "The query is empty or too short to ground before framing.",
   };
@@ -505,42 +511,54 @@ async function selectGroundingTargets(
       no_grounding_reason: plan.reason,
     };
   }
+  const task = input.plan.inputs.task as ScientificTask;
+  const originalUserQuestion = task.question;
   input.onProgress?.({
     label: "Select grounding terms",
     detail: "Asking the model to select exact terms or short phrases that need grounding.",
     data: {
-      query: plan.query,
+      originalUserQuestion,
       step: "grounding_target_selection",
       status: "started",
     },
   });
   const prompt = [
     "Select grounding targets before problem framing.",
-    `User research query: ${plan.query}`,
+    "Full original user query:",
+    originalUserQuestion,
     ...(knownDiscipline ? [`Known discipline context: ${knownDiscipline}`] : []),
     "",
-    "Task:",
-    "- The user query may include paper links such as arXiv URLs, DOI links, publisher URLs, or PDF URLs.",
-    "- First use paper links as source/context anchors for interpreting nearby technical terms, then decide whether any term still needs additional grounding.",
-    "- Do not select a term solely because it is important, specialized, or has broader-field meanings when the user's paper context already narrows the intended meaning.",
-    "- Do not select a term if the full query and its paper links already define, constrain, or intentionally scope the term's intended meaning.",
-    "- Select only terms that remain scientifically ambiguous after considering the full query, including paper links and how the user relates those links to the request.",
-    "- A term should be selected only when generic grounding would help frame the question better than reading the linked paper context.",
+    "Selection instructions:",
+    "",
+    "Grounding target definition:",
+    "- A grounding target is a term whose meaning must be clarified by external generic grounding before the system can frame the research problem.",
+    "- Do not select a term merely because it is important, central, or framing-sensitive.",
+    "- Do not select the user's research object when the user also provides a source, method, paper, system, result, or other context that anchors how the object should be interpreted.",
+    "- Select a term only if the full original query still lacks enough context to interpret it for problem framing.",
+    "- If a term is source-anchored but still uncertain, preserve that uncertainty for problem framing or downstream literature review instead of generic grounding.",
+    "",
+    "Context handling:",
+    "- Use paper links, PDFs, named sources, methods, systems, theories, or artifacts as context anchors.",
     "- Do not select URLs, DOI strings, arXiv identifiers, PDF filenames, or generic request words as grounding targets.",
-    "- Pick only representative scientific/technical concepts from the user query whose meaning could change the scientific framing if misunderstood.",
-    "- A good grounding target is usually a domain term, method name, mechanism, dataset/benchmark name, model architecture, theorem/conjecture, material, reaction, observable, or instrument-specific phrase.",
+    "",
+    "Valid target scope:",
+    "- A valid grounding target may be a domain term, method name, mechanism, dataset, benchmark, model architecture, theorem, material, observable, or instrument-specific phrase, but only when the full original query does not provide enough context to interpret it.",
+    "- Select 0-4 targets.",
+    "- If the query is already clear and no term needs grounding, return an empty targets array and explain why.",
+    "",
+    "Discipline inference:",
     "- Infer one provisional discipline label with a confidence score from 0 to 1.",
     "- If a known discipline context is explicitly provided, use it as the discipline label with high confidence unless the query clearly conflicts.",
     "- If no known discipline context is provided, infer the discipline from the query only; use low confidence when ambiguous.",
     "- This provisional discipline is not final; the later problem framing stage will decide the final discipline.",
-    "- Preserve the user's original spelling, casing, and language for each selected span.",
-    "- Select 0-4 targets.",
+    "",
+    "Output rules:",
+    "- Preserve the user's original spelling and casing for each selected span.",
+    "- Write all rationale, compatibility, and no_grounding_reason text in English.",
+    "- For each selected term, explain why external generic grounding is necessary before problem framing.",
     "- Do not search the web in this step.",
     "- Do not explain the concept itself; only decide what should be grounded.",
-    "- Each selection reason should reference the provisional discipline and its confidence when that affects why the term needs grounding.",
     "- If multiple targets are selected, prefer targets whose disciplines are consistent or compatible; explain compatibility in the compatibility field.",
-    "- Prefer a narrow technical phrase over the whole query when possible.",
-    "- If the query is already clear and no term needs grounding, return an empty targets array and explain why.",
     "",
     schemaInstruction(GROUNDING_TARGET_SCHEMA),
   ].join("\n");
@@ -558,7 +576,7 @@ async function selectGroundingTargets(
       ? `Selected ${targetPlan.targets.length} grounding target(s).`
       : "No grounding targets were selected.",
     data: {
-      query: plan.query,
+      originalUserQuestion,
       step: "grounding_target_selection",
       status: "completed",
       terms: targetPlan.targets.map((target) => target.term),
@@ -636,7 +654,6 @@ function coerceGroundingTargetPlan(value: Record<string, unknown>): GroundingTar
 async function groundQueryConcepts(
   input: SpecialistRunInput,
   targetPlan: GroundingTargetPlan,
-  originalQuestion: string,
   disciplineContext: GroundingDisciplineContext | undefined,
   modelStep: ModelStepRunner,
 ): Promise<GroundingResult[]> {
@@ -653,7 +670,7 @@ async function groundQueryConcepts(
         tool: "openai_hosted_web_search",
       },
     });
-    const result = await callHostedWebSearch(input, target, originalQuestion, disciplineContext, modelStep);
+    const result = await callHostedWebSearch(input, target, disciplineContext, modelStep);
     input.onProgress?.({
       label: "Search web with model",
       detail: `Used hosted web search to ground "${target.term}": ${result.status}.`,
@@ -680,7 +697,6 @@ async function groundQueryConcepts(
 async function callHostedWebSearch(
   input: SpecialistRunInput,
   target: GroundingTarget,
-  originalQuestion: string,
   disciplineContext: GroundingDisciplineContext | undefined,
   modelStep: ModelStepRunner,
 ) {
@@ -700,15 +716,19 @@ async function callHostedWebSearch(
       status: "started",
     },
   });
+  const task = input.plan.inputs.task as ScientificTask;
   const prompt = [
     "Use web search to ground one selected scientific term before problem framing.",
-    `Original user research query: ${originalQuestion}`,
+    "Your goal is to reduce ambiguity for problem framing, not to write a general encyclopedia entry.",
+    "Use the original user query as the interpretation context; do not replace source-anchored or task-specific meaning with broader generic usage.",
+    `Original user research query: ${task.question}`,
     `Selected grounding term: "${target.term}"`,
     ...renderGroundingDisciplinePromptLines(disciplineContext),
     "",
     "Search the selected term exactly first. Then check close variants only if the exact term is not established.",
     "Do not silently conflate the selected term with broader nearby concepts. Name distinct meanings separately.",
     "If the exact term is not standardized, say that explicitly and explain the most plausible interpretations separately.",
+    "Write all narrative text in English. Preserve technical terms, paper titles, method names, URLs, and identifiers in their original form.",
     "",
     "Return concise Markdown using this schema:",
     "## Exact Term Status",
@@ -717,6 +737,8 @@ async function callHostedWebSearch(
     "Separate exact usage from nearby-but-different terms.",
     "## Relevance To The User Query",
     "Explain which interpretation best fits the original query and why.",
+    "## Framing Implication",
+    "State how this grounding should affect problem framing, including whether the term should remain ambiguous, source-specific, or broadly defined.",
     "## Source-Backed Notes",
     "Give 2-4 notes with URLs.",
     "## Caveats",
@@ -778,12 +800,6 @@ function groundingProgressNote(output: unknown, error?: string): string | undefi
   if (!output || typeof output !== "object") return undefined;
   const note = (output as Record<string, unknown>).note;
   return typeof note === "string" ? note : undefined;
-}
-
-function normalizeGroundingFallbackQuery(question: string): string | undefined {
-  const cleaned = question.replace(/\s+/g, " ").trim();
-  if (cleaned.length < 4) return undefined;
-  return cleaned.length > 160 ? `${cleaned.slice(0, 157)}...` : cleaned;
 }
 
 function summarizeGroundingOutput(output: unknown, error?: string): string {

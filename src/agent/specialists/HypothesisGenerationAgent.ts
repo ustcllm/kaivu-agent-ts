@@ -111,6 +111,7 @@ export class HypothesisGenerationAgent extends BaseSpecialistAgent {
   async run(input: SpecialistRunInput): Promise<StageResult> {
     const prompt = [
       `Generate testable scientific hypotheses for: ${input.plan.objective}.`,
+      "Write all narrative and structured text fields in English. Preserve technical terms, paper titles, method names, URLs, and identifiers in their original form.",
       "Use the current research state as evidence context, especially literature review outputs, evidence gaps, rejected ideas, and artifacts.",
       "Do not present guesses as conclusions. Each hypothesis must be falsifiable and distinguishable from at least one rival explanation.",
       "Make mechanism, boundary conditions, measurable variables, and missing theory fields explicit.",

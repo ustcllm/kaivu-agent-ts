@@ -8,7 +8,11 @@ export class VerificationAgent extends BaseSpecialistAgent {
 
   async run(input: SpecialistRunInput): Promise<StageResult> {
     const summary = await this.modelStep(input, {
-      prompt: `Validate the current hypotheses for: ${input.plan.objective}. Check novelty, feasibility, falsifiability, and evidence readiness.`,
+      prompt: [
+        `Validate the current hypotheses for: ${input.plan.objective}.`,
+        "Write the output in English. Preserve technical terms, paper titles, method names, URLs, and identifiers in their original form.",
+        "Check novelty, feasibility, falsifiability, and evidence readiness.",
+      ].join("\n"),
     });
     return {
       stage: this.stage,

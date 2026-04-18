@@ -114,6 +114,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
     const digestMarkdown = await this.modelStep(input, {
       prompt: [
         `Create a literature review digest for: ${input.plan.objective}.`,
+        "Write the digest in English. Preserve technical terms, paper titles, method names, URLs, and identifiers in their original form.",
         "Search plan:",
         renderSearchPlanForPrompt(generatedPlan.plan.search_strategy, searchQueries),
         `Language policy: primary=${problemFrame.languagePolicy.primarySearchLanguage}; input=${problemFrame.languagePolicy.inputLanguage}; reason=${problemFrame.languagePolicy.reason}`,
@@ -356,19 +357,21 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       "",
       `Discipline: ${problemFrame.discipline}`,
       `Language policy: primary=${problemFrame.languagePolicy.primarySearchLanguage}; input=${problemFrame.languagePolicy.inputLanguage}; reason=${problemFrame.languagePolicy.reason}`,
-      originalQuestion && originalQuestion !== problemFrame.objective ? `Original user question: ${originalQuestion}` : "",
+      `Original user question: ${originalQuestion}`,
       "",
       "Problem frame:",
       problemFrame.renderedMarkdown,
       "",
       "Query rules:",
       "- Return up to 10 English database-ready search strings.",
+      "- Write all purpose, scope, rationale, search_strategy, and exclusion text in English.",
       "- For each query, include disciplineScope: the scientific/domain scope this query is intended to cover, e.g. artificial_intelligence, mathematics, physics, chemistry, chemical_engineering, cross_disciplinary, or a concise method-domain label such as artificial_intelligence/mechanistic_interpretability.",
       "- Use disciplineScope to make coverage explicit; do not put discipline labels into the query string unless they are useful search terms.",
       "- Each query must be directly usable in arXiv, Semantic Scholar, Google Scholar, or similar scholarly search.",
       "- Prefer robust keyword-style queries over natural-language questions.",
       "- Prefer broad-to-focused coverage rather than many near-duplicate narrow queries.",
       "- Use exact quoted phrases only when the exact phrase appears in the original question or problem frame.",
+      "- If the original user question includes paper links, use any available linked-paper context such as title, abstract, and reference/related-work direction as retrieval anchors; do not include URLs in query strings.",
       "- Do not invent acronyms, paper names, benchmark names, method names, or aliases not present in the frame.",
       "- Do not include instructions such as \"find papers about\".",
       "- Do not include Chinese text in query strings.",
@@ -392,6 +395,8 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
     queries: LiteratureQueryPlanItem[],
     problemFrame: ProblemFrameArtifactView,
   ): Promise<{ accepted: NormalizedSearchQuery[]; rejected: Array<{ query: string; reason: string }> }> {
+    const task = input.plan.inputs.task as { question?: string } | undefined;
+    const originalQuestion = task?.question ?? input.plan.objective;
     const candidateQueries = queries.map((item) => ({
       purpose: item.purpose,
       query: item.query,
@@ -419,6 +424,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       "",
       "Final query set requirements:",
       "- Return exactly 5 final English database-ready search strings unless the problem is genuinely underspecified.",
+      "- Write all purpose, rationale, and rejection reason text in English.",
       "- If fewer than 5 candidate queries are high quality, generate replacement queries.",
       "- The final set should balance:",
       "  1. broad context",
@@ -434,7 +440,11 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       "- Do not include instructions such as \"find papers about\".",
       "- Do not include Chinese text in query strings.",
       "- Do not invent acronyms, paper names, benchmark names, method names, or aliases not present in the framed problem unless they are clearly standard field terminology.",
+      "- If the original user question includes paper links, preserve the linked-paper context as a retrieval anchor while keeping URLs out of final query strings.",
       "- Prefer queries that will retrieve papers, not blog posts or generic web pages.",
+      "",
+      "Original user question:",
+      originalQuestion,
       "",
       "Problem frame:",
       problemFrame.renderedMarkdown,
@@ -594,6 +604,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       "Goal: recover likely foundational, prior, or closely related papers that the seed papers may cite or build on.",
       "Use only the seed paper titles, abstracts, and the problem frame. Do not invent exact reference titles unless the words appear in seed metadata.",
       "Return at most 5 English database-ready search strings. Prefer title/keyphrase style queries.",
+      "Write all purpose and rationale text in English.",
       "",
       `Expansion round: ${round}`,
       "",
@@ -1086,6 +1097,7 @@ async function extractStructuredLiteratureReview(
 ): Promise<LiteratureStructuredExtraction | undefined> {
   const prompt = [
     "Extract a structured systematic-review style evidence table from the literature digest and retrieved source context.",
+    "Write all extracted claim, note, attribution, evidence-gap, and summary text in English.",
     "Use only information present in the digest or source context. Do not invent papers, URLs, or results.",
     "For evidenceDirection use one of: supports, contradicts, contextual, mixed, unknown.",
     "For qualityGrade use one of: high, moderate, low, unclear.",
