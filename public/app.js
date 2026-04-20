@@ -18,7 +18,6 @@ const clearFixtureButton = document.querySelector("#clearFixtureButton");
 const fixtureStatus = document.querySelector("#fixtureStatus");
 const fixtureSelect = document.querySelector("#fixtureSelect");
 
-const STAGE_FIXTURE_KEY = "kaivu.stageFixture.v1";
 const STAGE_FIXTURES_KEY = "kaivu.stageFixtures.v2";
 
 let activeController = null;
@@ -79,11 +78,7 @@ loadFixtureButton.addEventListener("click", () => {
 
 clearFixtureButton.addEventListener("click", () => {
   const fixture = selectedStageFixture();
-  if (fixture?.id) {
-    saveStageFixtures(loadStageFixtures().filter((item) => item.id !== fixture.id));
-  } else {
-    localStorage.removeItem(STAGE_FIXTURE_KEY);
-  }
+  if (fixture?.id) saveStageFixtures(loadStageFixtures().filter((item) => item.id !== fixture.id));
   updateFixtureControls();
 });
 
@@ -144,10 +139,6 @@ async function runResearchTurn(query, options = {}) {
       ? {
           researchSessionId: reviewForRequest.researchSessionId,
           model: modelSelect.value,
-          ...(reviewForRequest.researchSessionId && !reviewForRequest.useStateFallback ? {} : {
-            task: reviewForRequest.task,
-            initialState: reviewForRequest.state,
-          }),
           mode: "interactive",
           maxIterations: 1,
           pauseAfterStage: true,
@@ -221,8 +212,6 @@ function loadSelectedFixture(fixture) {
   pendingReview = {
     researchSessionId: fixture.researchSessionId,
     task: fixture.task,
-    state: fixture.state,
-    useStateFallback: true,
   };
   canSaveCurrentStage = false;
   fixtureSelect.hidden = true;
@@ -971,7 +960,6 @@ function saveStageFixture(review) {
     savedAt: new Date().toISOString(),
     researchSessionId: review.researchSessionId,
     task: review.task,
-    state: review.state,
     resumeStage: review.state?.currentStage,
     completedStages: review.state?.completedStages || [],
   };
@@ -995,16 +983,11 @@ function selectedStageFixture() {
 function loadStageFixtures() {
   const rawList = localStorage.getItem(STAGE_FIXTURES_KEY);
   const fixtures = parseFixtureList(rawList);
-  const legacy = loadLegacyStageFixture();
-  const merged = legacy && !fixtures.some((fixture) => fixture.id === legacy.id)
-    ? [legacy, ...fixtures]
-    : fixtures;
-  return merged.sort((a, b) => String(b.savedAt || "").localeCompare(String(a.savedAt || "")));
+  return fixtures.sort((a, b) => String(b.savedAt || "").localeCompare(String(a.savedAt || "")));
 }
 
 function saveStageFixtures(fixtures) {
   localStorage.setItem(STAGE_FIXTURES_KEY, JSON.stringify(fixtures));
-  localStorage.removeItem(STAGE_FIXTURE_KEY);
 }
 
 function parseFixtureList(raw) {
@@ -1012,22 +995,10 @@ function parseFixtureList(raw) {
   try {
     const fixtures = JSON.parse(raw);
     return Array.isArray(fixtures)
-      ? fixtures.filter((fixture) => fixture?.task && (fixture?.researchSessionId || fixture?.sessionId || fixture?.state)).map(ensureFixtureId)
+      ? fixtures.filter((fixture) => fixture?.task && (fixture?.researchSessionId || fixture?.sessionId)).map(ensureFixtureId)
       : [];
   } catch {
     return [];
-  }
-}
-
-function loadLegacyStageFixture() {
-  const raw = localStorage.getItem(STAGE_FIXTURE_KEY);
-  if (!raw) return null;
-  try {
-    const fixture = JSON.parse(raw);
-    if (!fixture?.task || (!fixture?.researchSessionId && !fixture?.sessionId && !fixture?.state)) return null;
-    return ensureFixtureId(fixture);
-  } catch {
-    return null;
   }
 }
 
@@ -1063,7 +1034,7 @@ function updateFixtureControls() {
 }
 
 function fixtureLabel(fixture) {
-  const stage = humanizeKey(String(fixture.resumeStage || fixture.state?.currentStage || "next stage"));
+  const stage = humanizeKey(String(fixture.resumeStage || "next stage"));
   const question = String(fixture.task?.question || fixture.task?.title || "untitled").slice(0, 42);
   return `${formatFixtureDate(fixture.savedAt)} | ${stage} | ${question}`;
 }
@@ -1071,41 +1042,24 @@ function fixtureLabel(fixture) {
 function renderFixtureSavedMessage(fixture) {
   return `
     <strong>Kaivu</strong>
-    <p>Saved a stage fixture. Next debug run can resume at <code>${escapeHtml(String(fixture.resumeStage || "next stage"))}</code> without rerunning previous stages.</p>
+    <p>Saved a live checkpoint for <code>${escapeHtml(String(fixture.resumeStage || "next stage"))}</code>.</p>
   `;
 }
 
 function renderFixtureLoadedMessage(fixture) {
-  const state = fixture.state || {};
-  const task = fixture.task || state.task || {};
-  const latestExchange = Array.isArray(state.exchangeViews) ? state.exchangeViews.at(-1) : undefined;
-  const completedStages = Array.isArray(fixture.completedStages) ? fixture.completedStages : state.completedStages || [];
-  const artifactCount = Array.isArray(state.artifactRefs) ? state.artifactRefs.length : Array.isArray(state.artifacts) ? state.artifacts.length : 0;
-  const evidenceCount = Array.isArray(state.evidence) ? state.evidence.length : 0;
-  const hypothesisCount = Array.isArray(state.hypotheses) ? state.hypotheses.length : 0;
+  const task = fixture.task || {};
+  const completedStages = Array.isArray(fixture.completedStages) ? fixture.completedStages : [];
   return `
     <strong>Kaivu</strong>
-    <p>Loaded saved fixture. Use <b>Revise this stage</b> to rerun the current stage with notes, or <b>Accept stage and continue</b> to pass notes into <code>${escapeHtml(String(fixture.resumeStage || "next stage"))}</code>.</p>
+    <p>Loaded live checkpoint. Use <b>Revise this stage</b> to rerun the current stage with notes, or <b>Accept stage and continue</b> to pass notes into <code>${escapeHtml(String(fixture.resumeStage || "next stage"))}</code>.</p>
     <section class="fixture-summary">
       <dl class="process-details">
         ${renderDetailRow("saved at", formatFixtureDate(fixture.savedAt))}
-        ${renderDetailRow("resume stage", humanizeKey(String(fixture.resumeStage || state.currentStage || "next stage")))}
+        ${renderDetailRow("resume stage", humanizeKey(String(fixture.resumeStage || "next stage")))}
         ${renderDetailRow("completed stages", completedStages.length ? completedStages.map((stage) => humanizeKey(String(stage))) : ["none"])}
         ${renderDetailRow("question", task.question || task.title || "unknown")}
         ${renderDetailRow("discipline", task.discipline || "unknown")}
-        ${renderDetailRow("state counts", {
-          evidence: evidenceCount,
-          hypotheses: hypothesisCount,
-          artifacts: artifactCount,
-          iteration: state.iteration ?? 0,
-        })}
       </dl>
-      ${latestExchange ? `
-        <details class="fixture-output" open>
-          <summary>Latest saved stage output: ${escapeHtml(humanizeKey(String(latestExchange.stage || "stage")))}</summary>
-          <div class="stage-markdown">${renderMarkdown(String(latestExchange.summary || "No saved summary."))}</div>
-        </details>
-      ` : ""}
     </section>
   `;
 }

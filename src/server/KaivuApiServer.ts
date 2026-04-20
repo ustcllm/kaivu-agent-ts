@@ -57,7 +57,6 @@ export interface ResearchRunBody {
   discipline?: string;
   stageOrder?: ScientificStage[];
   pauseAfterStage?: boolean;
-  initialState?: ResearchState;
   stageInteraction?: StageInteractionRequest;
 }
 
@@ -78,6 +77,7 @@ interface ResearchSession {
   state?: ResearchState;
   memory: SciMemory;
   graph: ResearchGraphRegistry;
+  literature: LiteratureKnowledgeBase;
 }
 
 export class KaivuApiServer {
@@ -155,8 +155,7 @@ export class KaivuApiServer {
     if (!task.question.trim()) {
       throw new Error("query or task.question is required");
     }
-    const literature = new LiteratureKnowledgeBase();
-    const runtime = new SciRuntime(model, createResearchToolRegistry(literature), literature, new ScientificCapabilityRegistry(), undefined, session.graph);
+    const runtime = new SciRuntime(model, createResearchToolRegistry(session.literature), session.literature, new ScientificCapabilityRegistry(), undefined, session.graph);
     const agent = new SciAgent({
       id: "chief_scientific_agent",
       discipline: task.discipline ?? "to_be_determined",
@@ -193,21 +192,21 @@ export class KaivuApiServer {
     if (body.researchSessionId) {
       const existing = this.researchSessions.get(body.researchSessionId);
       if (existing) return existing;
-      if (!body.initialState && !body.task && !body.query?.trim()) {
+      if (!body.task && !body.query?.trim()) {
         throw new Error("Unknown or expired research session. Start a new research run.");
       }
     }
 
-    const task = body.task ?? body.initialState?.task ?? taskFromQuery(body.query ?? "");
+    const task = body.task ?? taskFromQuery(body.query ?? "");
     const now = new Date().toISOString();
     const session: ResearchSession = {
       id: body.researchSessionId || makeId("research-session"),
       createdAt: now,
       updatedAt: now,
       task,
-      state: body.initialState,
       memory: new SciMemory(),
       graph: new ResearchGraphRegistry(),
+      literature: new LiteratureKnowledgeBase(),
     };
     this.researchSessions.set(session.id, session);
     return session;
@@ -759,9 +758,7 @@ function taskFromQuery(query: string): ScientificTask {
 }
 
 function stateForClient(state: ResearchState): ResearchState {
-  const clientState = { ...state };
-  delete clientState.pendingStageResult;
-  return clientState;
+  return state;
 }
 
 async function prepareInteractiveState(
