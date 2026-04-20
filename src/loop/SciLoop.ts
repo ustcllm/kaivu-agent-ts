@@ -91,6 +91,17 @@ export class SciLoop {
               },
         }),
       );
+      if (input.pauseAfterStage && input.mode === "interactive") {
+        state = {
+          ...state,
+          pendingStageResult: runtimeResult.stageResult,
+          done: true,
+          stopReason: `paused_after_${stage}`,
+        };
+        iterationsThisRun += 1;
+        continue;
+      }
+
       const memoryCommit = await this.memory.commit(
         runtimeResult.stageResult.memoryProposals,
         `${input.agent.id}:${specialist.id}:${stage}`,
@@ -142,9 +153,6 @@ export class SciLoop {
 
       if (runtimeResult.stageResult.decision.status === "needs_human_review") {
         state = { ...state, done: true, stopReason: runtimeResult.stageResult.decision.reason };
-      }
-      if (!state.done && input.pauseAfterStage && input.mode === "interactive") {
-        state = { ...state, done: true, stopReason: `paused_after_${stage}` };
       }
       iterationsThisRun += 1;
     }

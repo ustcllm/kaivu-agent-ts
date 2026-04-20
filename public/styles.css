@@ -172,7 +172,7 @@ textarea {
 
 .composer-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 190px 150px;
+  grid-template-columns: minmax(0, 1fr) 120px 190px 150px;
   gap: 12px;
 }
 
@@ -383,6 +383,13 @@ pre {
   background: linear-gradient(135deg, var(--clay), #a95637);
 }
 
+.start-over-button {
+  color: var(--forest);
+  background: rgba(255, 255, 255, 0.64);
+  border: 1px solid var(--line);
+}
+
+.start-over-button[hidden],
 .continue-button[hidden] {
   display: block;
   visibility: hidden;

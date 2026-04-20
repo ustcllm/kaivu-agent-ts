@@ -14,6 +14,7 @@ import { ScientificCapabilityRegistry } from "../capabilities/ScientificCapabili
 import { ResearchGraphRegistry } from "../graph/ResearchGraph.js";
 import { LiteratureKnowledgeBase } from "../literature/LiteratureKnowledgeBase.js";
 import type { ResearchState } from "../shared/ResearchStateTypes.js";
+import { applyStageResult } from "../loop/ResearchState.js";
 import { SciLoop } from "../loop/SciLoop.js";
 import type { TrajectoryEvent } from "../loop/Trajectory.js";
 import { SciMemory } from "../memory/SciMemory.js";
@@ -30,6 +31,7 @@ import { createResearchToolRegistry } from "../runtime/ResearchToolRegistry.js";
 import { SciRuntime } from "../runtime/SciRuntime.js";
 import type { ResearchMode, ScientificTask, ScientificStage } from "../shared/ScientificLifecycle.js";
 import type { AuthIdentity, AuthSession } from "../auth/AuthSession.js";
+import { makeId } from "../shared/ids.js";
 
 export interface KaivuApiServerOptions {
   port?: number;
@@ -46,6 +48,7 @@ export interface OpenAIKeyLoginBody {
 
 export interface ResearchRunBody {
   sessionId?: string;
+  researchSessionId?: string;
   query?: string;
   task?: ScientificTask;
   mode?: ResearchMode;
@@ -58,9 +61,23 @@ export interface ResearchRunBody {
   stageInteraction?: StageInteractionRequest;
 }
 
+export interface ResearchRunResponse extends Awaited<ReturnType<SciLoop["run"]>> {
+  researchSessionId: string;
+}
+
 export interface StageInteractionRequest {
   action: "revise_current_stage" | "proceed_to_next_stage";
   message?: string;
+}
+
+interface ResearchSession {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  task: ScientificTask;
+  state?: ResearchState;
+  memory: SciMemory;
+  graph: ResearchGraphRegistry;
 }
 
 export class KaivuApiServer {
@@ -68,6 +85,7 @@ export class KaivuApiServer {
   private readonly auth = new OpenAIAuthService(this.credentialStore);
   private readonly resolver = new CredentialResolver(this.credentialStore);
   private readonly sessions = new Map<string, AuthSession>();
+  private readonly researchSessions = new Map<string, ResearchSession>();
 
   constructor(private readonly options: KaivuApiServerOptions = {}) {}
 
@@ -130,16 +148,15 @@ export class KaivuApiServer {
   private async runResearch(
     body: ResearchRunBody,
     onEvent?: (event: TrajectoryEvent) => void,
-  ): Promise<Awaited<ReturnType<SciLoop["run"]>>> {
+  ): Promise<ResearchRunResponse> {
     const model = await this.resolveModel(body);
-    const task = body.task ?? taskFromQuery(body.query ?? "");
+    const session = this.getOrCreateResearchSession(body);
+    const task = session.task;
     if (!task.question.trim()) {
       throw new Error("query or task.question is required");
     }
     const literature = new LiteratureKnowledgeBase();
-    const graph = new ResearchGraphRegistry();
-    const memory = new SciMemory();
-    const runtime = new SciRuntime(model, createResearchToolRegistry(literature), literature, new ScientificCapabilityRegistry(), undefined, graph);
+    const runtime = new SciRuntime(model, createResearchToolRegistry(literature), literature, new ScientificCapabilityRegistry(), undefined, session.graph);
     const agent = new SciAgent({
       id: "chief_scientific_agent",
       discipline: task.discipline ?? "to_be_determined",
@@ -152,9 +169,9 @@ export class KaivuApiServer {
       ],
       stageOrder: body.stageOrder ?? ["problem_framing", "literature_review", "hypothesis_generation", "hypothesis_validation", "experiment_design"],
     });
-    const loop = new SciLoop(runtime, memory, graph);
-    const initialState = prepareInteractiveState(body.initialState, body.stageInteraction);
-    return await loop.run({
+    const loop = new SciLoop(runtime, session.memory, session.graph);
+    const initialState = await prepareInteractiveState(session.state, body.stageInteraction, agent, session.memory, session.graph);
+    const result = await loop.run({
       task,
       agent,
       mode: body.mode ?? "interactive",
@@ -163,6 +180,37 @@ export class KaivuApiServer {
       initialState,
       onEvent,
     });
+    session.state = result.state;
+    session.updatedAt = new Date().toISOString();
+    return {
+      ...result,
+      researchSessionId: session.id,
+      state: stateForClient(result.state),
+    };
+  }
+
+  private getOrCreateResearchSession(body: ResearchRunBody): ResearchSession {
+    if (body.researchSessionId) {
+      const existing = this.researchSessions.get(body.researchSessionId);
+      if (existing) return existing;
+      if (!body.initialState && !body.task && !body.query?.trim()) {
+        throw new Error("Unknown or expired research session. Start a new research run.");
+      }
+    }
+
+    const task = body.task ?? body.initialState?.task ?? taskFromQuery(body.query ?? "");
+    const now = new Date().toISOString();
+    const session: ResearchSession = {
+      id: body.researchSessionId || makeId("research-session"),
+      createdAt: now,
+      updatedAt: now,
+      task,
+      state: body.initialState,
+      memory: new SciMemory(),
+      graph: new ResearchGraphRegistry(),
+    };
+    this.researchSessions.set(session.id, session);
+    return session;
   }
 
   private async streamResearch(body: ResearchRunBody, response: ServerResponse): Promise<void> {
@@ -710,26 +758,43 @@ function taskFromQuery(query: string): ScientificTask {
   };
 }
 
-function prepareInteractiveState(
+function stateForClient(state: ResearchState): ResearchState {
+  const clientState = { ...state };
+  delete clientState.pendingStageResult;
+  return clientState;
+}
+
+async function prepareInteractiveState(
   state: ResearchState | undefined,
   interaction: StageInteractionRequest | undefined,
-): ResearchState | undefined {
+  agent: SciAgent,
+  memory: SciMemory,
+  graph: ResearchGraphRegistry,
+): Promise<ResearchState | undefined> {
   if (!state) return undefined;
-  const unpaused = state.stopReason?.startsWith("paused_after_")
+  let preparedState = state.stopReason?.startsWith("paused_after_")
     ? { ...state, done: false, stopReason: undefined }
     : { ...state };
-  if (!interaction) return unpaused;
+  if (!interaction) return preparedState;
 
-  const completedStage = unpaused.completedStages.at(-1);
-  const targetStage = interaction.action === "revise_current_stage"
-    ? completedStage ?? unpaused.currentStage
-    : unpaused.currentStage;
+  const reviewedStage = preparedState.pendingStageResult?.stage ?? preparedState.currentStage;
+  if (interaction.action === "proceed_to_next_stage" && preparedState.pendingStageResult) {
+    preparedState = await acceptPendingStageResult(preparedState, agent, memory, graph);
+  } else if (interaction.action === "revise_current_stage") {
+    preparedState = {
+      ...preparedState,
+      pendingStageResult: undefined,
+      currentStage: reviewedStage,
+    };
+  }
+
+  const targetStage = preparedState.currentStage;
   const message = interaction.message?.trim();
-  const pendingStageInputs = { ...(unpaused.pendingStageInputs ?? {}) };
+  const pendingStageInputs = { ...(preparedState.pendingStageInputs ?? {}) };
   if (message) {
     const sourceStage = interaction.action === "revise_current_stage"
-      ? targetStage
-      : completedStage ?? unpaused.currentStage;
+      ? reviewedStage
+      : reviewedStage;
     pendingStageInputs[targetStage] = [
       ...(pendingStageInputs[targetStage] ?? []),
       {
@@ -744,8 +809,31 @@ function prepareInteractiveState(
   }
 
   return {
-    ...unpaused,
+    ...preparedState,
     currentStage: targetStage,
     pendingStageInputs,
   };
+}
+
+async function acceptPendingStageResult(
+  state: ResearchState,
+  agent: SciAgent,
+  memory: SciMemory,
+  graph: ResearchGraphRegistry,
+): Promise<ResearchState> {
+  const result = state.pendingStageResult;
+  if (!result) return state;
+  const source = `${agent.id}:${result.specialistId}:${result.stage}`;
+  await memory.commit(result.memoryProposals, source);
+  if (result.graphProposals.length > 0) {
+    graph.applyGraphProposals(result.graphProposals, source);
+  }
+  return applyStageResult(
+    {
+      ...state,
+      pendingStageResult: undefined,
+    },
+    result,
+    agent.nextStageAfter(result.stage),
+  );
 }

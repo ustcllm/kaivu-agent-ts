@@ -1,5 +1,5 @@
 import type { ScientificStage, ScientificTask } from "./ScientificLifecycle.js";
-import type { ArtifactRef, EvidenceItem, HypothesisItem } from "./StageContracts.js";
+import type { ArtifactRef, EvidenceItem, HypothesisItem, StageResult } from "./StageContracts.js";
 
 export interface PendingStageInput {
   id: string;
@@ -21,6 +21,7 @@ export interface ResearchState {
   artifacts: string[];
   artifactRefs: ArtifactRef[];
   pendingStageInputs?: Partial<Record<ScientificStage, PendingStageInput[]>>;
+  pendingStageResult?: StageResult;
   blockers: string[];
   done: boolean;
   stopReason?: string;

@@ -9,6 +9,7 @@ const chatForm = document.querySelector("#chatForm");
 const messages = document.querySelector("#messages");
 const queryInput = document.querySelector("#queryInput");
 const modelSelect = document.querySelector("#modelSelect");
+const startOverButton = document.querySelector("#startOverButton");
 const continueButton = document.querySelector("#continueButton");
 const sendButton = document.querySelector("#sendButton");
 const saveFixtureButton = document.querySelector("#saveFixtureButton");
@@ -45,6 +46,17 @@ continueButton.addEventListener("click", () => {
     showUserMessage: Boolean(note),
     stageInteractionAction: "proceed_to_next_stage",
   });
+});
+
+startOverButton.addEventListener("click", () => {
+  if (!pendingReview || activeController) return;
+  const originalQuestion = String(pendingReview.task?.question || pendingReview.task?.title || "").trim();
+  pendingReview = null;
+  canSaveCurrentStage = false;
+  queryInput.value = originalQuestion;
+  updateContinueButton(false);
+  updateFixtureControls();
+  queryInput.focus();
 });
 
 saveFixtureButton.addEventListener("click", () => {
@@ -130,9 +142,12 @@ async function runResearchTurn(query, options = {}) {
   try {
     const body = reviewForRequest
       ? {
+          researchSessionId: reviewForRequest.researchSessionId,
           model: modelSelect.value,
-          task: reviewForRequest.task,
-          initialState: reviewForRequest.state,
+          ...(reviewForRequest.researchSessionId && !reviewForRequest.useStateFallback ? {} : {
+            task: reviewForRequest.task,
+            initialState: reviewForRequest.state,
+          }),
           mode: "interactive",
           maxIterations: 1,
           pauseAfterStage: true,
@@ -159,7 +174,7 @@ async function runResearchTurn(query, options = {}) {
 
     const paused = String(result.state?.stopReason || "").startsWith("paused_after_");
     if (paused) {
-      pendingReview = { task: result.state.task, state: result.state };
+      pendingReview = { researchSessionId: result.researchSessionId, task: result.state.task, state: result.state };
       canSaveCurrentStage = true;
       updateFixtureControls();
       updateStatusOnly(
@@ -204,8 +219,10 @@ async function runResearchTurn(query, options = {}) {
 
 function loadSelectedFixture(fixture) {
   pendingReview = {
+    researchSessionId: fixture.researchSessionId,
     task: fixture.task,
     state: fixture.state,
+    useStateFallback: true,
   };
   canSaveCurrentStage = false;
   fixtureSelect.hidden = true;
@@ -922,20 +939,27 @@ function finalConclusion(state) {
 
 function setBusy(busy) {
   document.body.classList.toggle("is-running", busy);
-  sendButton.textContent = busy ? "Cancel" : pendingReview ? "Continue current stage" : "Start research";
-  queryInput.disabled = busy;
-  continueButton.disabled = busy || !pendingReview;
+  updateComposerControls(Boolean(pendingReview));
   saveFixtureButton.disabled = busy || !pendingReview || !canSaveCurrentStage;
   loadFixtureButton.disabled = busy || !loadStageFixture();
   clearFixtureButton.disabled = busy || !loadStageFixture();
 }
 
 function updateContinueButton(visible) {
-  continueButton.hidden = !visible;
-  continueButton.disabled = !visible || Boolean(activeController);
-  sendButton.textContent = activeController ? "Cancel" : pendingReview ? "Continue current stage" : "Start research";
+  updateComposerControls(visible);
+}
+
+function updateComposerControls(reviewVisible) {
+  const busy = Boolean(activeController);
+  startOverButton.hidden = !reviewVisible;
+  startOverButton.disabled = !reviewVisible || busy;
+  continueButton.hidden = !reviewVisible;
+  continueButton.disabled = !reviewVisible || busy;
+  continueButton.textContent = "Accept stage and continue";
+  sendButton.textContent = busy ? "Cancel" : pendingReview ? "Revise this stage" : "Start research";
+  queryInput.disabled = busy;
   queryInput.placeholder = pendingReview
-    ? "Add notes for the current stage, or write handoff notes before continuing to the next stage..."
+    ? "Write notes to revise this stage, or handoff notes before accepting and continuing..."
     : "Ask Kaivu to investigate a scientific question...";
 }
 
@@ -945,6 +969,7 @@ function saveStageFixture(review) {
     version: 1,
     id: `fixture_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     savedAt: new Date().toISOString(),
+    researchSessionId: review.researchSessionId,
     task: review.task,
     state: review.state,
     resumeStage: review.state?.currentStage,
@@ -987,7 +1012,7 @@ function parseFixtureList(raw) {
   try {
     const fixtures = JSON.parse(raw);
     return Array.isArray(fixtures)
-      ? fixtures.filter((fixture) => fixture?.task && fixture?.state).map(ensureFixtureId)
+      ? fixtures.filter((fixture) => fixture?.task && (fixture?.researchSessionId || fixture?.sessionId || fixture?.state)).map(ensureFixtureId)
       : [];
   } catch {
     return [];
@@ -999,7 +1024,7 @@ function loadLegacyStageFixture() {
   if (!raw) return null;
   try {
     const fixture = JSON.parse(raw);
-    if (!fixture?.task || !fixture?.state) return null;
+    if (!fixture?.task || (!fixture?.researchSessionId && !fixture?.sessionId && !fixture?.state)) return null;
     return ensureFixtureId(fixture);
   } catch {
     return null;
@@ -1009,6 +1034,7 @@ function loadLegacyStageFixture() {
 function ensureFixtureId(fixture) {
   return {
     ...fixture,
+    researchSessionId: fixture.researchSessionId || fixture.sessionId,
     id: fixture.id || `legacy_${String(fixture.savedAt || Date.now()).replace(/[^a-z0-9]/gi, "_")}`,
   };
 }
@@ -1059,7 +1085,7 @@ function renderFixtureLoadedMessage(fixture) {
   const hypothesisCount = Array.isArray(state.hypotheses) ? state.hypotheses.length : 0;
   return `
     <strong>Kaivu</strong>
-    <p>Loaded saved fixture. Use <b>Continue current stage</b> to revise the last completed stage, or <b>Continue next stage</b> to run <code>${escapeHtml(String(fixture.resumeStage || "next stage"))}</code> using the frozen upstream state.</p>
+    <p>Loaded saved fixture. Use <b>Revise this stage</b> to rerun the current stage with notes, or <b>Accept stage and continue</b> to pass notes into <code>${escapeHtml(String(fixture.resumeStage || "next stage"))}</code>.</p>
     <section class="fixture-summary">
       <dl class="process-details">
         ${renderDetailRow("saved at", formatFixtureDate(fixture.savedAt))}

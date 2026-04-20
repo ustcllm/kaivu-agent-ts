@@ -39,6 +39,7 @@ export function applyStageResult(state: ResearchState, result: StageResult, fall
       ...(state.pendingStageInputs ?? {}),
       [result.stage]: [],
     },
+    pendingStageResult: undefined,
     done,
     stopReason: done ? result.decision.reason : state.stopReason,
   };

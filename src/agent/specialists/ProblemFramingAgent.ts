@@ -101,6 +101,11 @@ export class ProblemFramingAgent extends BaseSpecialistAgent {
       stepId: this.id,
       prompt: framingPrompt,
       includeRenderedContext: false,
+      stageUserInputPolicy: [
+        "Use revision notes together with the original question.",
+        "Keep the original question as provenance, but when revision notes correct or narrow it, frame the corrected topic.",
+        "Apply revision notes directly to this stage's output rather than merely passing them downstream.",
+      ],
     });
     const parsedFrame = await parseOrRepairProblemFrame(input, rawSummary, modelStep);
     const framedDiscipline = parsedFrame.discipline || "unknown";
@@ -568,6 +573,9 @@ async function selectGroundingTargets(
     prompt,
     includeRenderedContext: false,
     stream: false,
+    stageUserInputPolicy: [
+      "Choose grounding targets for the corrected or narrowed topic described by revision notes.",
+    ],
   });
   const targetPlan = await parseOrRepairGroundingTargets(input, raw, modelStep);
   input.onProgress?.({
@@ -757,6 +765,9 @@ async function callHostedWebSearch(
       includeRenderedContext: false,
       stream: false,
       hostedWebSearch: true,
+      stageUserInputPolicy: [
+        "Use revision notes to interpret the selected term in the corrected or narrowed research context.",
+      ],
     });
     return {
       name: "openai_hosted_web_search",

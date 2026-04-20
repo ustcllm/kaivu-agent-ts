@@ -20,7 +20,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
   async run(input: SpecialistRunInput): Promise<StageResult> {
     const sourceIngests = this.ingestProvidedSources(input);
     const task = input.plan.inputs.task as { question?: string; discipline?: string } | undefined;
-    const problemFrameArtifact = this.findProblemFrameArtifact(input);
+    const problemFrameArtifact = this.findLatestProblemFrameArtifact(input);
     if (!hasProblemFrameArtifactMetadata(problemFrameArtifact?.metadata)) {
       return this.missingProblemFrame(input, task);
     }
@@ -322,10 +322,13 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
     );
   }
 
-  private findProblemFrameArtifact(input: SpecialistRunInput): ArtifactRef | undefined {
-    for (let index = input.researchState.artifactRefs.length - 1; index >= 0; index -= 1) {
-      const artifact = input.researchState.artifactRefs[index];
-      if (artifact.id === "problem_frame") return artifact;
+  private findLatestProblemFrameArtifact(input: SpecialistRunInput): ArtifactRef | undefined {
+    const artifacts = input.researchState.artifactRefs ?? [];
+    for (let index = artifacts.length - 1; index >= 0; index -= 1) {
+      const artifact = artifacts[index];
+      if (artifact.id === "problem_frame" || artifact.kind === "problem_frame") {
+        return artifact;
+      }
     }
     return undefined;
   }
@@ -392,6 +395,12 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       stepId: "literature_query_planning_model",
       prompt,
       includeRenderedContext: false,
+      stageUserInputPolicy: [
+        "Use handoff notes as literature retrieval guidance: source hints, baseline papers, terminology anchors, coverage priorities, scope constraints, or exclusions.",
+        "If notes include paper links, treat them as source, baseline, and terminology anchors, but do not include raw URLs in search query strings.",
+        "Use linked-paper titles, methods, benchmarks, authors, venues, or exact terminology only when visible in the notes or prompt; do not invent missing details.",
+        "Keep the accepted problem frame as the main research frame; if notes conflict with it, reflect the conflict in search_strategy or exclusions instead of silently changing the research problem.",
+      ],
     });
     const modelStep = (options: Parameters<ModelStepRunner>[0]) => this.modelStep(input, options);
     return { raw, plan: await parseOrRepairLiteratureQueryPlan(raw, modelStep) };
@@ -467,6 +476,12 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       prompt,
       includeRenderedContext: false,
       stream: false,
+      stageUserInputPolicy: [
+        "Use user notes to accept, reject, or replace candidate queries.",
+        "Prefer final queries that satisfy note-based scope constraints, source hints, linked-paper anchors, exclusions, or coverage priorities.",
+        "If notes include paper links, preserve linked-paper context as source, baseline, and terminology anchors while keeping raw URLs out of final query strings.",
+        "Reject or rewrite candidate queries that violate explicit note-based constraints or ignore important note-based source hints.",
+      ],
     });
     const curation = await parseOrRepairQueryCuration(raw, (options) => this.modelStep(input, options));
     const normalized = curation.queries

@@ -38,6 +38,7 @@ export interface ModelStepOptions {
   hostedWebSearch?: boolean;
   webSearchDomains?: string[];
   maxOutputTokens?: number;
+  stageUserInputPolicy?: string | string[];
 }
 
 export type ModelStepRunner = (options: ModelStepOptions) => Promise<string>;
@@ -60,7 +61,9 @@ export abstract class BaseSpecialistAgent implements SpecialistAgent {
     options: ModelStepOptions,
   ): Promise<string> {
     const system = options.system ?? `You are ${this.id}, a stage specialist in a scientific research agent.`;
-    const stageUserInputContext = renderStageUserInputContext(input.plan.inputs.stageUserInputs);
+    const stageUserInputContext = renderStageUserInputContext(input.plan.inputs.stageUserInputs, {
+      policy: options.stageUserInputPolicy,
+    });
     const contextualPrompt = options.includeRenderedContext !== false && input.renderedContext
       ? [
           input.renderedContext,
@@ -97,23 +100,39 @@ export abstract class BaseSpecialistAgent implements SpecialistAgent {
 
 }
 
-function renderStageUserInputContext(value: unknown): string {
+function renderStageUserInputContext(value: unknown, options: { policy?: string | string[] } = {}): string {
   if (!Array.isArray(value) || value.length === 0) return "";
-  const messages = value
-    .map((item, index) => {
-      if (!item || typeof item !== "object") return "";
-      const record = item as Record<string, unknown>;
-      const message = typeof record.message === "string" ? record.message.trim() : "";
-      if (!message) return "";
-      const action = typeof record.action === "string" ? record.action : "stage_input";
-      const sourceStage = typeof record.sourceStage === "string" ? record.sourceStage : "unknown";
-      return `${index + 1}. [${action} from ${sourceStage}] ${message}`;
-    })
-    .filter(Boolean);
-  if (messages.length === 0) return "";
-  return [
-    "# User Input For This Stage",
-    "Use these user-provided notes, corrections, constraints, or source hints when producing this stage output.",
-    ...messages,
-  ].join("\n");
+  const revisionNotes: string[] = [];
+  const handoffNotes: string[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const message = typeof record.message === "string" ? record.message.trim() : "";
+    if (!message) continue;
+    const action = typeof record.action === "string" ? record.action : "stage_input";
+    if (action === "proceed_to_next_stage") {
+      handoffNotes.push(message);
+    } else {
+      revisionNotes.push(message);
+    }
+  }
+  if (revisionNotes.length === 0 && handoffNotes.length === 0) return "";
+  const sections: string[] = [
+    "# User Notes For This Step",
+  ];
+  const policy = Array.isArray(options.policy)
+    ? options.policy.filter((item) => item.trim())
+    : typeof options.policy === "string" && options.policy.trim()
+      ? [options.policy.trim()]
+      : [];
+  if (policy.length > 0) {
+    sections.push("", "How to use these notes:", ...policy.map((item) => `- ${item}`));
+  }
+  if (revisionNotes.length > 0) {
+    sections.push("", "Revision notes:", ...revisionNotes.map((message, index) => `${index + 1}. ${message}`));
+  }
+  if (handoffNotes.length > 0) {
+    sections.push("", "Handoff notes:", ...handoffNotes.map((message, index) => `${index + 1}. ${message}`));
+  }
+  return sections.join("\n");
 }
