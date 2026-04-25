@@ -1,12 +1,5 @@
 import { makeId } from "../shared/ids.js";
-import type { MemoryWriteProposal } from "../shared/MemoryTypes.js";
-import {
-  decideLiteratureIngestPolicy,
-  renderLiteratureDigest,
-  type LiteratureIngestPolicy,
-  type LiteratureIngestRequest,
-  type LiteratureSource,
-} from "./LiteraturePolicy.js";
+import type { PaperSource } from "../agent/specialists/literature/PaperSource.js";
 
 export interface CitationRecord {
   key: string;
@@ -19,17 +12,7 @@ export interface CitationRecord {
   abstract?: string;
 }
 
-export interface LiteratureDigestRecord {
-  id: string;
-  sourceId: string;
-  title: string;
-  digestMarkdown: string;
-  policy: LiteratureIngestPolicy;
-  createdAt: string;
-  confirmed: boolean;
-}
-
-export interface LiteratureWikiPage {
+export interface LiteratureRuntimePage {
   id: string;
   title: string;
   summary: string;
@@ -124,81 +107,35 @@ export interface LiteratureReviewSynthesisRecord {
   createdAt: string;
 }
 
-export interface LiteratureIngestResult {
-  source: LiteratureSource;
-  digest: LiteratureDigestRecord;
-  memoryProposal: MemoryWriteProposal;
-  autoCommitted: boolean;
-}
-
-export class LiteratureKnowledgeBase {
+/**
+ * Runtime working state for literature review execution.
+ *
+ * Intended role:
+ * - keep citation and retrieval-side structured records available to agents
+ * - store review-time pages, claims, conflict groups, and synthesized review records
+ * - support execution-time lookup and orchestration during literature review
+ *
+ * Not the long-term source of truth for the persistent literature wiki.
+ * Not responsible for persistent paper-digest assets; those live in PaperDigests.
+ * Paper pages, claim pages, topic synthesis pages, and other compiled wiki
+ * knowledge should progressively live in the literature wiki file layer.
+ */
+export class LiteratureReviewRuntimeStore {
   private readonly citations = new Map<string, CitationRecord>();
-  private readonly digests: LiteratureDigestRecord[] = [];
-  private readonly pages = new Map<string, LiteratureWikiPage>();
+  private readonly pages = new Map<string, LiteratureRuntimePage>();
   private readonly claims: LiteratureClaimRecord[] = [];
   private readonly conflictGroups = new Map<string, LiteratureConflictGroup>();
   private readonly reviewSyntheses: LiteratureReviewSynthesisRecord[] = [];
   private readonly log: Array<{ timestamp: string; action: string; targetId: string; detail: string }> = [];
 
-  ingest(request: LiteratureIngestRequest): LiteratureIngestResult {
-    const policy = decideLiteratureIngestPolicy(request);
-    const citation = toCitationRecord(request.source);
-    this.citations.set(citation.key, citation);
-    this.appendLog("citation_upsert", citation.key, request.source.title);
-
-    const digest: LiteratureDigestRecord = {
-      id: makeId("literature-digest"),
-      sourceId: request.source.id,
-      title: request.source.title,
-      digestMarkdown: renderLiteratureDigest(request, policy),
-      policy,
-      createdAt: new Date().toISOString(),
-      confirmed: !policy.requiresConfirmation,
-    };
-    this.digests.push(digest);
-    this.appendLog("digest_created", digest.id, request.source.title);
-
-    const page = this.upsertSourcePage(request.source, digest);
-    const memoryProposal: MemoryWriteProposal = {
-      scope: policy.targetScope,
-      kind: "reference",
-      title: `Literature: ${request.source.title}`,
-      summary: page.summary,
-      content: digest.digestMarkdown,
-      tags: ["literature", "digest", request.source.sourceType],
-      evidenceLevel: request.source.sourceType === "paper" ? "peer_reviewed" : request.source.sourceType === "preprint" ? "preprint" : "unknown",
-      confidence: request.confidence ?? "medium",
-      status: policy.needsReview ? "draft" : "active",
-      visibility: policy.targetScope === "group" ? "group" : policy.targetScope === "public" ? "public" : policy.targetScope === "project" ? "project" : "private",
-      promotionStatus: policy.needsReview ? "candidate" : "approved",
-      sourceRefs: [citation.key],
-      needsReview: policy.needsReview,
-    };
-
-    return {
-      source: request.source,
-      digest,
-      memoryProposal,
-      autoCommitted: !policy.requiresConfirmation,
-    };
-  }
-
-  confirmDigest(digestId: string): LiteratureDigestRecord | undefined {
-    const digest = this.digests.find((item) => item.id === digestId);
-    if (!digest) return undefined;
-    digest.confirmed = true;
-    this.appendLog("digest_confirmed", digest.id, digest.title);
-    return digest;
-  }
-
   recordReviewSynthesis(input: LiteratureReviewSynthesisInput): LiteratureReviewSynthesisRecord {
     const now = new Date().toISOString();
     const normalizedSources = input.retrievedSources.flatMap((batch) =>
       batch.results.map((result) => {
-        const source: LiteratureSource = {
+        const source: PaperSource = {
           id: result.id ?? result.link ?? `${batch.tool}:${result.title}`,
           title: result.title,
-          sourceType: toLiteratureSourceType(result.sourceType ?? batch.tool),
+          sourceType: toPaperSourceType(result.sourceType ?? batch.tool),
           content: result.summary ?? "",
           url: result.link ?? result.id,
           authors: result.authors,
@@ -242,7 +179,7 @@ export class LiteratureKnowledgeBase {
     return record;
   }
 
-  search(query: string, limit = 6): LiteratureWikiPage[] {
+  search(query: string, limit = 6): LiteratureRuntimePage[] {
     const terms = query.toLowerCase().split(/[^a-z0-9\u4e00-\u9fff]+/u).filter(Boolean);
     return [...this.pages.values()]
       .map((page) => {
@@ -306,10 +243,6 @@ export class LiteratureKnowledgeBase {
     return [...this.citations.values()];
   }
 
-  digestSnapshot(): LiteratureDigestRecord[] {
-    return this.digests.map((digest) => ({ ...digest, policy: { ...digest.policy, reasons: [...digest.policy.reasons] } }));
-  }
-
   claimSnapshot(): LiteratureClaimRecord[] {
     return this.claims.map((claim) => ({ ...claim, sourceIds: [...claim.sourceIds] }));
   }
@@ -331,25 +264,10 @@ export class LiteratureKnowledgeBase {
     }));
   }
 
-  private upsertSourcePage(source: LiteratureSource, digest: LiteratureDigestRecord): LiteratureWikiPage {
-    const pageId = `source:${source.id}`;
-    const page: LiteratureWikiPage = {
-      id: pageId,
-      title: source.title,
-      summary: summarizeSource(source),
-      sourceIds: [source.id],
-      tags: ["source", source.sourceType, digest.policy.writeTarget],
-      updatedAt: new Date().toISOString(),
-    };
-    this.pages.set(pageId, page);
-    this.appendLog("wiki_page_upserted", pageId, source.title);
-    return page;
-  }
-
-  private upsertRetrievedSourcePage(source: LiteratureSource, query: string, tool: string, now: string): LiteratureWikiPage {
+  private upsertRetrievedSourcePage(source: PaperSource, query: string, tool: string, now: string): LiteratureRuntimePage {
     const pageId = `source:${source.id}`;
     const existing = this.pages.get(pageId);
-    const page: LiteratureWikiPage = {
+    const page: LiteratureRuntimePage = {
       id: pageId,
       title: source.title,
       summary: summarizeSource(source),
@@ -506,7 +424,7 @@ export class LiteratureKnowledgeBase {
   }
 }
 
-function toCitationRecord(source: LiteratureSource): CitationRecord {
+function toCitationRecord(source: PaperSource): CitationRecord {
   const normalizedDoi = source.doi?.trim().toLowerCase();
   const key = normalizedDoi ? `doi:${normalizedDoi}` : source.url ? `url:${source.url.toLowerCase()}` : `title:${source.title.toLowerCase()}`;
   return {
@@ -521,18 +439,18 @@ function toCitationRecord(source: LiteratureSource): CitationRecord {
   };
 }
 
-function summarizeSource(source: LiteratureSource): string {
+function summarizeSource(source: PaperSource): string {
   const clipped = source.content.trim().replace(/\s+/g, " ").slice(0, 260);
   return clipped || `${source.sourceType} source awaiting digest`;
 }
 
-function toLiteratureSourceType(value: string): LiteratureSource["sourceType"] {
+function toPaperSourceType(value: string): PaperSource["sourceType"] {
   const normalized = value.toLowerCase();
   if (normalized.includes("arxiv")) return "preprint";
   if (normalized.includes("crossref") || normalized.includes("paper")) return "paper";
   if (normalized.includes("pubmed")) return "paper";
   if (["paper", "preprint", "article", "web", "dataset", "report", "unknown"].includes(normalized)) {
-    return normalized as LiteratureSource["sourceType"];
+    return normalized as PaperSource["sourceType"];
   }
   return "unknown";
 }
@@ -627,4 +545,8 @@ function slug(value: string): string {
 
 function escapeTable(value: string): string {
   return value.replaceAll("|", "\\|").replace(/\s+/g, " ").trim();
+}
+
+function normalizeLocator(value: string): string {
+  return value.trim().toLowerCase();
 }

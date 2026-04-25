@@ -1,10 +1,10 @@
-import type { LiteratureKnowledgeBase } from "../literature/LiteratureKnowledgeBase.js";
+import type { LiteratureReviewRuntimeStore } from "../literature/LiteratureReviewRuntimeStore.js";
 import { createArxivSearchTool } from "./tools/ArxivSearchTool.js";
 import { createPaperDownloadTool } from "./tools/PaperDownloadTool.js";
 import { createRagArxivRetrieveTool } from "./tools/RagArxivRetrieveTool.js";
 import { ToolRegistry, type Tool } from "./ToolRegistry.js";
 
-export function createResearchToolRegistry(literature: LiteratureKnowledgeBase): ToolRegistry {
+export function createResearchToolRegistry(literature: LiteratureReviewRuntimeStore): ToolRegistry {
   const registry = new ToolRegistry();
   const tools: Tool[] = [
     createArxivSearchTool(),

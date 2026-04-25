@@ -2,7 +2,7 @@ import type {
   LiteratureClaimRecord,
   LiteratureConflictGroup,
   LiteratureReviewSynthesisRecord,
-} from "../literature/LiteratureKnowledgeBase.js";
+} from "../literature/LiteratureReviewRuntimeStore.js";
 
 export interface EvidenceReviewEngineInput {
   topic: string;

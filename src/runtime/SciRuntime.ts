@@ -2,8 +2,9 @@ import type { SciAgent } from "../agent/SciAgent.js";
 import type { SpecialistAgent } from "../agent/SpecialistAgent.js";
 import { ScientificCapabilityRegistry } from "../capabilities/ScientificCapabilityRegistry.js";
 import { ContextPackBuilder } from "../context/ContextPack.js";
+import type { PaperDigests } from "../literature/PaperDigest.js";
 import type { ResearchGraphRegistry } from "../graph/ResearchGraph.js";
-import type { LiteratureKnowledgeBase } from "../literature/LiteratureKnowledgeBase.js";
+import type { LiteratureReviewRuntimeStore } from "../literature/LiteratureReviewRuntimeStore.js";
 import type { SciMemory } from "../memory/SciMemory.js";
 import { makeId } from "../shared/ids.js";
 import type { ResearchState } from "../shared/ResearchStateTypes.js";
@@ -38,7 +39,8 @@ export class SciRuntime {
   constructor(
     private readonly model: ModelProvider,
     private readonly tools: ToolRegistry,
-    private readonly literature?: LiteratureKnowledgeBase,
+    private readonly literature?: LiteratureReviewRuntimeStore,
+    private readonly paperDigests?: PaperDigests,
     private readonly capabilities = new ScientificCapabilityRegistry(),
     private readonly modelRegistry?: ModelRegistry,
     private readonly graph?: ResearchGraphRegistry,
@@ -119,6 +121,7 @@ export class SciRuntime {
       contextPack,
       renderedContext: contextPack.renderPromptContext(Math.floor(contextPack.policy.budget.targetTokens * 4)),
       literature: this.literature,
+      paperDigests: this.paperDigests,
       model,
       tools: this.tools,
       onProgress: (progress) => {

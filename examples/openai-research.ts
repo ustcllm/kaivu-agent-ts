@@ -2,9 +2,10 @@ import "dotenv/config";
 import {
   ExperimentDesignAgent,
   HypothesisGenerationAgent,
-  LiteratureKnowledgeBase,
+  LiteratureReviewRuntimeStore,
   LiteratureReviewAgent,
   OpenAIResponsesModelProvider,
+  PaperDigests,
   ResearchGraphRegistry,
   SciAgent,
   SciLoop,
@@ -18,13 +19,14 @@ import {
 declare const process: { env: Record<string, string | undefined> };
 
 const memory = new SciMemory();
-const literature = new LiteratureKnowledgeBase();
+const literature = new LiteratureReviewRuntimeStore();
+const paperDigests = await PaperDigests.load(".kaivu/users/example-user/literature");
 const graph = new ResearchGraphRegistry();
 const model = new OpenAIResponsesModelProvider({
   model: process.env.KAIVU_MODEL ?? "gpt-5-mini",
   reasoningEffort: "medium",
 });
-const runtime = new SciRuntime(model, new ToolRegistry(), literature, new ScientificCapabilityRegistry());
+const runtime = new SciRuntime(model, new ToolRegistry(), literature, paperDigests, new ScientificCapabilityRegistry());
 const agent = new SciAgent({
   id: "chief_scientific_agent",
   discipline: "artificial_intelligence",

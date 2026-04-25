@@ -1,4 +1,4 @@
-import type { LiteratureKnowledgeBase } from "../literature/LiteratureKnowledgeBase.js";
+import type { LiteratureReviewRuntimeStore } from "../literature/LiteratureReviewRuntimeStore.js";
 import type { SciMemory } from "../memory/SciMemory.js";
 import type { ScientificStage } from "../shared/ScientificLifecycle.js";
 import type { ResearchGraphRegistry } from "../graph/ResearchGraph.js";
@@ -36,7 +36,7 @@ export interface ContextPackBuilderInput {
   topic: string;
   stage: ScientificStage | string;
   memory: SciMemory;
-  literature?: LiteratureKnowledgeBase;
+  literature?: LiteratureReviewRuntimeStore;
   graph?: ResearchGraphRegistry;
   userId?: string;
   projectId?: string;

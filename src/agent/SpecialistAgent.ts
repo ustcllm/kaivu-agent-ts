@@ -1,7 +1,8 @@
 import type { ContextPack } from "../context/ContextPack.js";
+import type { PaperDigests } from "../literature/PaperDigest.js";
 import type { MemoryRecord } from "../memory/MemoryRecord.js";
-import type { LiteratureKnowledgeBase } from "../literature/LiteratureKnowledgeBase.js";
-import type { ModelCompleteOptions, ModelProvider, ModelProviderStatusEvent } from "../runtime/ModelProvider.js";
+import type { LiteratureReviewRuntimeStore } from "../literature/LiteratureReviewRuntimeStore.js";
+import type { ModelCompleteOptions, ModelInputAttachment, ModelProvider, ModelProviderStatusEvent } from "../runtime/ModelProvider.js";
 import type { ToolRegistry } from "../runtime/ToolRegistry.js";
 import type { ScientificStage } from "../shared/ScientificLifecycle.js";
 import type { ResearchState } from "../shared/ResearchStateTypes.js";
@@ -13,7 +14,8 @@ export interface SpecialistRunInput {
   memoryContext: MemoryRecord[];
   contextPack?: ContextPack;
   renderedContext?: string;
-  literature?: LiteratureKnowledgeBase;
+  literature?: LiteratureReviewRuntimeStore;
+  paperDigests?: PaperDigests;
   model: ModelProvider;
   tools: ToolRegistry;
   onModelPrompt?: (prompt: { specialistId: string; system: string; user: string }) => void;
@@ -38,7 +40,8 @@ export interface ModelStepOptions {
   hostedWebSearch?: boolean;
   webSearchDomains?: string[];
   maxOutputTokens?: number;
-  stageUserInputPolicy?: string | string[];
+  attachments?: ModelInputAttachment[];
+  stageUserInputPolicy?: string | string[] | false;
 }
 
 export type ModelStepRunner = (options: ModelStepOptions) => Promise<string>;
@@ -61,9 +64,11 @@ export abstract class BaseSpecialistAgent implements SpecialistAgent {
     options: ModelStepOptions,
   ): Promise<string> {
     const system = options.system ?? `You are ${this.id}, a stage specialist in a scientific research agent.`;
-    const stageUserInputContext = renderStageUserInputContext(input.plan.inputs.stageUserInputs, {
-      policy: options.stageUserInputPolicy,
-    });
+    const stageUserInputContext = options.stageUserInputPolicy === false
+      ? ""
+      : renderStageUserInputContext(input.plan.inputs.stageUserInputs, {
+          policy: options.stageUserInputPolicy,
+        });
     const contextualPrompt = options.includeRenderedContext !== false && input.renderedContext
       ? [
           input.renderedContext,
@@ -84,6 +89,7 @@ export abstract class BaseSpecialistAgent implements SpecialistAgent {
       hostedWebSearch: options.hostedWebSearch,
       webSearchDomains: options.webSearchDomains,
       maxOutputTokens: options.maxOutputTokens,
+      attachments: options.attachments,
     };
     const completion = await input.model.complete(
       [
@@ -100,7 +106,7 @@ export abstract class BaseSpecialistAgent implements SpecialistAgent {
 
 }
 
-function renderStageUserInputContext(value: unknown, options: { policy?: string | string[] } = {}): string {
+function renderStageUserInputContext(value: unknown, options: { policy?: string | string[] | false } = {}): string {
   if (!Array.isArray(value) || value.length === 0) return "";
   const revisionNotes: string[] = [];
   const handoffNotes: string[] = [];
@@ -120,7 +126,9 @@ function renderStageUserInputContext(value: unknown, options: { policy?: string 
   const sections: string[] = [
     "# User Notes For This Step",
   ];
-  const policy = Array.isArray(options.policy)
+  const policy = options.policy === false
+    ? []
+    : Array.isArray(options.policy)
     ? options.policy.filter((item) => item.trim())
     : typeof options.policy === "string" && options.policy.trim()
       ? [options.policy.trim()]

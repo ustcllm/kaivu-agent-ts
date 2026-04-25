@@ -1,0 +1,4 @@
+version: 1
+display_name: Problem Frame
+short_description: Turn broad research requests into structured problem frames.
+default_prompt: Frame this request into a structured research problem before any literature review or hypothesis work.

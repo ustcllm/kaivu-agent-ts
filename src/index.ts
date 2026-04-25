@@ -33,13 +33,39 @@ export {
   planMemoryMigrations,
 } from "./memory/MemoryGovernance.js";
 export type * from "./memory/MemoryGovernance.js";
-export { LiteratureKnowledgeBase } from "./literature/LiteratureKnowledgeBase.js";
-export type * from "./literature/LiteratureKnowledgeBase.js";
+export { LiteratureReviewRuntimeStore } from "./literature/LiteratureReviewRuntimeStore.js";
+export type * from "./literature/LiteratureReviewRuntimeStore.js";
+export * from "./literature/LiteraturePaths.js";
 export {
-  decideLiteratureIngestPolicy,
-  renderLiteratureDigest,
-} from "./literature/LiteraturePolicy.js";
-export type * from "./literature/LiteraturePolicy.js";
+  literatureWikiPageDirectory,
+  literatureWikiPagePath,
+  renderLiteratureWikiPageMarkdown,
+} from "./literature/LiteratureWikiPage.js";
+export type * from "./literature/LiteratureWikiPage.js";
+export {
+  LITERATURE_LINT_MODEL_OUTPUT_SHAPE,
+  LiteratureLint,
+  renderLiteratureLintPrompt,
+} from "./literature/LiteratureLint.js";
+export type * from "./literature/LiteratureLint.js";
+export { NaiveWikiSearch } from "./literature/WikiSearch.js";
+export type * from "./literature/WikiSearch.js";
+export { WikiRetrieve } from "./literature/WikiRetrieve.js";
+export type * from "./literature/WikiRetrieve.js";
+export { PaperIngest } from "./literature/PaperIngest.js";
+export type * from "./literature/PaperIngest.js";
+export type * from "./agent/specialists/literature/PaperSource.js";
+export {
+  PAPER_INGEST_PLAN_MODEL_OUTPUT_SHAPE,
+  renderPaperIngestPlanPrompt,
+} from "./literature/PaperIngest.js";
+export {
+  PAPER_DIGEST_MODEL_OUTPUT_SHAPE,
+  PAPER_LITERATURE_USE_VALUES,
+  renderPaperDigestPrompt,
+} from "./literature/PaperDigest.js";
+export type * from "./literature/PaperDigest.js";
+export { PaperDigests } from "./literature/PaperDigest.js";
 export { ContextPackBuilder } from "./context/ContextPack.js";
 export type * from "./context/ContextPack.js";
 export { ScientificContextCompressor } from "./context/ContextCompressor.js";

@@ -12,7 +12,9 @@ import { InMemoryCredentialStore } from "../auth/CredentialStore.js";
 import { OpenAIAuthService } from "../auth/OpenAIAuthService.js";
 import { ScientificCapabilityRegistry } from "../capabilities/ScientificCapabilityRegistry.js";
 import { ResearchGraphRegistry } from "../graph/ResearchGraph.js";
-import { LiteratureKnowledgeBase } from "../literature/LiteratureKnowledgeBase.js";
+import { PaperDigests } from "../literature/PaperDigest.js";
+import { userLiteratureDigestRoot } from "../literature/LiteraturePaths.js";
+import { LiteratureReviewRuntimeStore } from "../literature/LiteratureReviewRuntimeStore.js";
 import type { ResearchState } from "../shared/ResearchStateTypes.js";
 import { applyStageResult } from "../loop/ResearchState.js";
 import { SciLoop } from "../loop/SciLoop.js";
@@ -77,7 +79,8 @@ interface ResearchSession {
   state?: ResearchState;
   memory: SciMemory;
   graph: ResearchGraphRegistry;
-  literature: LiteratureKnowledgeBase;
+  literatureRuntime: LiteratureReviewRuntimeStore;
+  paperDigests: PaperDigests;
 }
 
 export class KaivuApiServer {
@@ -150,12 +153,20 @@ export class KaivuApiServer {
     onEvent?: (event: TrajectoryEvent) => void,
   ): Promise<ResearchRunResponse> {
     const model = await this.resolveModel(body);
-    const session = this.getOrCreateResearchSession(body);
+    const session = await this.getOrCreateResearchSession(body);
     const task = session.task;
     if (!task.question.trim()) {
       throw new Error("query or task.question is required");
     }
-    const runtime = new SciRuntime(model, createResearchToolRegistry(session.literature), session.literature, new ScientificCapabilityRegistry(), undefined, session.graph);
+    const runtime = new SciRuntime(
+      model,
+      createResearchToolRegistry(session.literatureRuntime),
+      session.literatureRuntime,
+      session.paperDigests,
+      new ScientificCapabilityRegistry(),
+      undefined,
+      session.graph,
+    );
     const agent = new SciAgent({
       id: "chief_scientific_agent",
       discipline: task.discipline ?? "to_be_determined",
@@ -188,7 +199,7 @@ export class KaivuApiServer {
     };
   }
 
-  private getOrCreateResearchSession(body: ResearchRunBody): ResearchSession {
+  private async getOrCreateResearchSession(body: ResearchRunBody): Promise<ResearchSession> {
     if (body.researchSessionId) {
       const existing = this.researchSessions.get(body.researchSessionId);
       if (existing) return existing;
@@ -199,17 +210,32 @@ export class KaivuApiServer {
 
     const task = body.task ?? taskFromQuery(body.query ?? "");
     const now = new Date().toISOString();
+    const sessionId = body.researchSessionId || makeId("research-session");
+    const userId = this.resolveResearchUserId(body);
     const session: ResearchSession = {
-      id: body.researchSessionId || makeId("research-session"),
+      id: sessionId,
       createdAt: now,
       updatedAt: now,
       task,
       memory: new SciMemory(),
       graph: new ResearchGraphRegistry(),
-      literature: new LiteratureKnowledgeBase(),
+      literatureRuntime: new LiteratureReviewRuntimeStore(),
+      paperDigests: await PaperDigests.load(userLiteratureDigestRoot(process.cwd(), userId)),
     };
     this.researchSessions.set(session.id, session);
     return session;
+  }
+
+  private resolveResearchUserId(body: ResearchRunBody): string {
+    const taskUserId = readTaskUserId(body.task);
+    if (taskUserId) return taskUserId;
+    if (body.sessionId) {
+      const authSession = this.sessions.get(body.sessionId);
+      if (authSession?.identity.userId?.trim()) {
+        return authSession.identity.userId.trim();
+      }
+    }
+    return "anonymous-user";
   }
 
   private async streamResearch(body: ResearchRunBody, response: ServerResponse): Promise<void> {
@@ -335,6 +361,12 @@ function describeTrajectoryEvent(event: TrajectoryEvent): string {
     return `Research loop finished: ${String(payload.stopReason ?? "completed")}.`;
   }
   return event.type;
+}
+
+function readTaskUserId(task: ScientificTask | undefined): string | undefined {
+  if (!task || typeof task.constraints !== "object" || task.constraints === null) return undefined;
+  const userId = (task.constraints as Record<string, unknown>).userId;
+  return typeof userId === "string" && userId.trim() ? userId.trim() : undefined;
 }
 
 function trajectoryEventDetails(event: TrajectoryEvent): Record<string, unknown> {

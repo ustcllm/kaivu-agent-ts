@@ -1,7 +1,13 @@
 import { makeId } from "../../shared/ids.js";
 import type { ArtifactRef, StageResult } from "../../shared/StageContracts.js";
-import type { LiteratureIngestResult, LiteratureReviewSynthesisInput, LiteratureStructuredExtraction } from "../../literature/LiteratureKnowledgeBase.js";
-import type { LiteratureSource } from "../../literature/LiteraturePolicy.js";
+import type { LiteratureReviewSynthesisInput, LiteratureStructuredExtraction } from "../../literature/LiteratureReviewRuntimeStore.js";
+import {
+  PaperDigests,
+  type PaperDigest,
+  type PaperDigestInput,
+  type PaperDigestResult,
+} from "../../literature/PaperDigest.js";
+import type { PaperSource } from "./literature/PaperSource.js";
 import type { LiteratureSearchPaper } from "../../shared/LiteratureSearchTypes.js";
 import {
   parseStructuredOutput,
@@ -18,7 +24,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
   description = "Builds literature digests, claim tables, conflict maps, and evidence gaps.";
 
   async run(input: SpecialistRunInput): Promise<StageResult> {
-    const sourceIngests = this.ingestProvidedSources(input);
+    const providedSources = this.readProvidedSources(input);
     const task = input.plan.inputs.task as { question?: string; discipline?: string } | undefined;
     const problemFrameArtifact = this.findLatestProblemFrameArtifact(input);
     if (!hasProblemFrameArtifactMetadata(problemFrameArtifact?.metadata)) {
@@ -95,9 +101,13 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       });
     }
     usefulPapers = await this.downloadUsefulPapers(input, usefulPapers);
+    const paperDigestRun = await this.digestUsefulPapers(input, usefulPapers, problemFrame.discipline);
+    const paperDigests = paperDigestRun.digests;
     const retrievedSourceContext = renderUsefulPaperContext(usefulPapers);
-    const providedSourceContext = renderProvidedSourceContext(sourceIngests);
-    const evidenceContext = [retrievedSourceContext, providedSourceContext].filter(Boolean).join("\n\n");
+    const paperDigestContext = renderPaperDigestContext(paperDigests);
+    const paperDigestFailureContext = renderPaperDigestFailureContext(paperDigestRun.failures);
+    const providedSourceContext = renderProvidedSourceContext(providedSources);
+    const evidenceContext = [retrievedSourceContext, paperDigestContext, paperDigestFailureContext, providedSourceContext].filter(Boolean).join("\n\n");
     input.onProgress?.({
       label: "Collect candidate sources",
       detail: "Collected, screened, expanded, and downloaded useful literature sources for digest synthesis.",
@@ -107,8 +117,10 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
         initialCandidateCount: initialCandidates.length,
         usefulPaperCount: usefulPapers.length,
         downloadedPaperCount: usefulPapers.filter((paper) => paper.localPath).length,
+        paperDigestCount: paperDigests.length,
+        paperDigestFailureCount: paperDigestRun.failures.length,
         referenceExpansionRounds: expansionSummaries,
-        providedSourceCount: sourceIngests.length,
+        providedSourceCount: providedSources.length,
       },
     });
     const digestMarkdown = await this.modelStep(input, {
@@ -127,7 +139,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       label: "Digest literature evidence",
       detail: "Synthesized retrieved/planned literature context into a review digest.",
       data: {
-        providedSources: sourceIngests.map((item) => item.source.title),
+        providedSources: providedSources.map((item) => item.title),
         digestTool: "literature_digest_synthesis",
       },
     });
@@ -155,8 +167,8 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       createdBy: this.id,
     });
     input.onProgress?.({
-      label: "Update literature knowledge base",
-      detail: "Recorded review synthesis, provisional claims, quality grades, and conflict groups in the literature knowledge base.",
+      label: "Update literature runtime store",
+      detail: "Recorded review synthesis, provisional claims, quality grades, and conflict groups in the literature runtime store.",
       data: {
         reviewId: reviewSynthesis?.id,
         sourceCount: reviewSynthesis?.sourceCount ?? 0,
@@ -166,7 +178,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
     });
     const summary = this.renderResultMarkdown({
       digestMarkdown,
-      providedSourceTitles: sourceIngests.map((item) => item.source.title),
+      providedSourceTitles: providedSources.map((item) => item.title),
     });
     return {
       stage: this.stage,
@@ -195,30 +207,23 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
                 initialCandidateCount: initialCandidates.length,
                 usefulPaperCount: usefulPapers.length,
                 usefulPapers: usefulPapers.map(summarizeUsefulPaper),
+                paperDigests: paperDigests.map(summarizePaperDigest),
+                paperDigestFailures: paperDigestRun.failures,
               },
               referenceExpansionRounds: expansionSummaries,
               note: "Literature retrieval used the configured live search tools and kept results in the shared literature-search output contract.",
             },
           },
         },
-        ...(sourceIngests.length > 0
+        ...(providedSources.length > 0
           ? [{
-              label: "Ingest provided sources",
+              label: "Read provided sources",
               status: "completed" as const,
-              detail: "Ingested explicitly provided literature sources before synthesis.",
+              detail: "Included explicitly provided literature sources as additional source context.",
               data: {
-                sourceCount: sourceIngests.length,
-                sourceTitles: sourceIngests.map((item) => item.source.title),
-                literatureWrites: sourceIngests.map((item) => ({
-                  sourceId: item.source.id,
-                  title: item.source.title,
-                  digestId: item.digest.id,
-                  digestConfirmed: item.digest.confirmed,
-                  wikiPageId: `source:${item.source.id}`,
-                  memoryTargetScope: item.memoryProposal.scope,
-                  memoryTitle: item.memoryProposal.title,
-                  requiresReview: item.memoryProposal.needsReview ?? false,
-                })),
+                sourceCount: providedSources.length,
+                sourceTitles: providedSources.map((item) => item.title),
+                sourceIds: providedSources.map((item) => item.id),
               },
             }]
           : []),
@@ -230,6 +235,8 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
             digestPreview: digestMarkdown.slice(0, 420),
             reviewSynthesis,
             structuredExtraction,
+            paperDigests: paperDigests.map(summarizePaperDigest),
+            paperDigestFailures: paperDigestRun.failures,
           },
         },
         {
@@ -239,14 +246,15 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
           data: {
             caveat: "The review is source-backed by retrieved metadata and downloaded PDFs when available; claims remain provisional until paper-level reading is expanded.",
               retrieval: summarizeRetrievalResults(retrievalResults),
-              literatureKnowledgeBase: input.literature
+              literatureRuntimeStore: input.literature
                 ? {
                     claimTable: input.literature.renderClaimTable(),
                     conflictMap: input.literature.renderConflictMap(),
                   }
                 : undefined,
               storage: {
-                literatureKnowledgeBase: ["citation library", "digest records", "source wiki pages"],
+                literatureRuntimeStore: ["citation library", "runtime review records", "claim/conflict runtime state"],
+                paperDigests: ["paper digest cache", "paper digest failures"],
                 memory: "project/reference memory proposal titled Literature review digest",
             },
           },
@@ -275,6 +283,8 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
                 queryPlan: generatedPlan.plan,
                 searchQueries,
                 usefulPapers: usefulPapers.map(summarizeUsefulPaper),
+                paperDigests,
+                paperDigestFailures: paperDigestRun.failures,
                 referenceExpansionRounds: expansionSummaries,
                 rejectedQueries: screenedQueries.rejected,
                 claimTable: input.literature?.renderClaimTable(),
@@ -284,7 +294,6 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
           ]
         : [],
       memoryProposals: [
-        ...sourceIngests.map((item) => item.memoryProposal),
         {
           scope: "project",
           kind: "reference",
@@ -304,22 +313,10 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
     };
   }
 
-  private ingestProvidedSources(input: SpecialistRunInput) {
-    if (!input.literature) {
-      return [];
-    }
+  private readProvidedSources(input: SpecialistRunInput): PaperSource[] {
     const task = input.plan.inputs.task as { constraints?: Record<string, unknown> } | undefined;
     const sourcesFromTask = task?.constraints?.literatureSources;
-    const sources = Array.isArray(sourcesFromTask) ? (sourcesFromTask as LiteratureSource[]) : [];
-    return sources.map((source) =>
-      input.literature!.ingest({
-        source,
-        mode: "guided",
-        targetScope: "project",
-        confidence: "medium",
-        researchMode: "interactive",
-      }),
-    );
+    return Array.isArray(sourcesFromTask) ? (sourcesFromTask as PaperSource[]) : [];
   }
 
   private findLatestProblemFrameArtifact(input: SpecialistRunInput): ArtifactRef | undefined {
@@ -684,6 +681,79 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
     return downloaded;
   }
 
+  private async digestUsefulPapers(
+    input: SpecialistRunInput,
+    usefulPapers: UsefulLiteraturePaper[],
+    disciplineHint?: string,
+  ): Promise<PaperDigestBatchResult> {
+    const service = new PaperDigests(
+      (options) => this.modelStep(input, options),
+      undefined,
+      {
+        pdfUrlReadSupport: input.model.pdfUrlReadSupport ?? "unsupported",
+        pdfFileReadSupport: input.model.pdfFileReadSupport ?? "unsupported",
+      },
+    );
+    const inputs = usefulPapers.map((paper) => paperDigestInputFromUsefulPaper(paper, disciplineHint));
+    const cachedDigests: PaperDigest[] = [];
+    const uncachedInputs: PaperDigestInput[] = [];
+    const seenKeys = new Set<string>();
+    for (const digestInput of inputs) {
+      const cached = input.paperDigests?.lookupPaperDigest(digestInput);
+      if (cached) {
+        cachedDigests.push(cached);
+        continue;
+      }
+      const key = paperDigestInputCacheKey(digestInput);
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      uncachedInputs.push(digestInput);
+    }
+    const freshBatch: PaperDigestBatchResult = {
+      digests: [],
+      failures: [],
+    };
+    for (const digestInput of uncachedInputs) {
+      const result = await service.digest(digestInput);
+      if (result.status === "completed") {
+        freshBatch.digests.push(result.digest);
+      } else {
+        freshBatch.failures.push(result);
+      }
+    }
+    for (const digest of freshBatch.digests) {
+      const sourceInput = uncachedInputs.find((item) => item.sourceId === digest.sourceId);
+      if (sourceInput) {
+        input.paperDigests?.recordPaperDigest(sourceInput, digest);
+      }
+    }
+    const batch: PaperDigestBatchResult = {
+      digests: [...cachedDigests, ...freshBatch.digests],
+      failures: freshBatch.failures,
+    };
+    for (const digest of batch.digests) {
+            input.paperDigests?.resolvePaperDigestFailureByCanonicalKey(digest.canonicalPaperKey, digest.sourceKind);
+            input.paperDigests?.resolvePaperDigestFailure(digest.sourceId, digest.sourceKind);
+      input.onProgress?.({
+        label: cachedDigests.some((item) => item.id === digest.id) ? "Reuse cached paper digest" : "Digest paper",
+        detail: digest.title || digest.sourceId,
+        data: {
+          sourceId: digest.sourceId,
+          canonicalPaperKey: digest.canonicalPaperKey,
+          digestId: digest.id,
+          sourceKind: digest.sourceKind,
+          contentLevel: digest.contentLevel,
+          pdfUrl: findPdfUrlDigestInput(inputs, digest.sourceId)?.pdfUrl,
+          notesIncluded: false,
+        },
+      });
+    }
+    for (const failure of batch.failures) {
+          input.paperDigests?.recordPaperDigestFailure(failure);
+    }
+    return batch;
+  }
+
   private planSearchSteps(searchQueries: Array<{ query: string; language: string; purpose: string; disciplineScope?: string }>) {
     const tools = ["arxiv_search"];
     return {
@@ -892,6 +962,11 @@ interface LiteratureExpansionSummary {
   searchedPaperCount: number;
   usefulPaperCount: number;
   note: string;
+}
+
+interface PaperDigestBatchResult {
+  digests: PaperDigest[];
+  failures: Array<Extract<PaperDigestResult, { status: "failed" }>>;
 }
 
 const LITERATURE_QUERY_PLAN_SCHEMA: StructuredSchema = {
@@ -1403,7 +1478,6 @@ function toReviewSynthesisSourcesFromPapers(papers: UsefulLiteraturePaper[]): Li
         summary: paper.summary,
         authors: paper.authors,
         publishedAt: paper.publishedAt,
-        categories: paper.categories,
         sourceType: paper.sourceType,
       })),
     };
@@ -1442,6 +1516,25 @@ function summarizeUsefulPaper(paper: UsefulLiteraturePaper): Record<string, unkn
   };
 }
 
+function summarizePaperDigest(digest: PaperDigest): Record<string, unknown> {
+  return {
+    id: digest.id,
+    sourceId: digest.sourceId,
+    canonicalPaperKey: digest.canonicalPaperKey,
+    sourceKind: digest.sourceKind,
+    discipline: digest.discipline,
+    schemaFamily: digest.schemaFamily,
+    selectionReason: digest.selectionReason,
+    doi: digest.doi,
+    arxivId: digest.arxivId,
+    title: digest.title,
+    contentLevel: digest.contentLevel,
+    usefulAs: digest.literatureReviewUse.usefulAs,
+    searchTerms: digest.literatureReviewUse.searchTerms.slice(0, 8),
+    uncertainty: digest.uncertainty.slice(0, 5),
+  };
+}
+
 function fallbackPaperDecision(paper: LiteraturePaperCandidate, problemFrame: ProblemFrameArtifactView): PaperRelevanceDecision {
   const haystack = `${paper.title} ${paper.summary ?? ""}`.toLowerCase();
   const frameTerms = [
@@ -1460,6 +1553,73 @@ function fallbackPaperDecision(paper: LiteraturePaperCandidate, problemFrame: Pr
       ? `Fallback relevance screening found overlapping technical terms: ${[...overlap].slice(0, 5).join(", ")}.`
       : "Fallback relevance screening found insufficient technical overlap with the framed problem.",
   };
+}
+
+function paperPdfUrl(paper: UsefulLiteraturePaper): string | undefined {
+  const link = paper.link?.trim();
+  if (!link) return undefined;
+  if (link.includes("arxiv.org/abs/")) return link.replace("/abs/", "/pdf/");
+  return link;
+}
+
+function paperDigestInputFromUsefulPaper(paper: UsefulLiteraturePaper, disciplineHint?: string): PaperDigestInput {
+  const normalizedDisciplineHint = normalizeDigestDisciplineHint(disciplineHint);
+  const pdfUrl = paperPdfUrl(paper);
+  if (!pdfUrl) {
+    return {
+      kind: "pdf_url",
+      sourceId: paper.id,
+      pdfUrl: "",
+      ...(normalizedDisciplineHint ? { disciplineHint: normalizedDisciplineHint } : {}),
+    };
+  }
+  return {
+    kind: "pdf_url",
+    sourceId: paper.id,
+    pdfUrl,
+    ...(normalizedDisciplineHint ? { disciplineHint: normalizedDisciplineHint } : {}),
+  };
+}
+
+function findPdfUrlDigestInput(inputs: PaperDigestInput[], sourceId: string): Extract<PaperDigestInput, { kind: "pdf_url" }> | undefined {
+  return inputs.find((item): item is Extract<PaperDigestInput, { kind: "pdf_url" }> => item.sourceId === sourceId && item.kind === "pdf_url");
+}
+
+function paperDigestInputCacheKey(input: PaperDigestInput): string {
+  if (input.kind === "pdf_url") {
+    return `pdf_url:${input.pdfUrl.trim().toLowerCase()}`;
+  }
+  return `pdf_file:${input.path.trim().toLowerCase()}`;
+}
+
+function normalizeDigestDisciplineHint(value?: string):
+  | "artificial_intelligence"
+  | "mathematics"
+  | "chemistry"
+  | "chemical_engineering"
+  | "physics"
+  | "general_science"
+  | "unknown"
+  | undefined {
+  const normalized = String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return [
+    "artificial_intelligence",
+    "mathematics",
+    "chemistry",
+    "chemical_engineering",
+    "physics",
+    "general_science",
+    "unknown",
+  ].includes(normalized)
+    ? normalized as
+        | "artificial_intelligence"
+        | "mathematics"
+        | "chemistry"
+        | "chemical_engineering"
+        | "physics"
+        | "general_science"
+        | "unknown"
+    : undefined;
 }
 
 function renderUsefulPaperContext(papers: UsefulLiteraturePaper[]): string {
@@ -1481,16 +1641,93 @@ function renderUsefulPaperContext(papers: UsefulLiteraturePaper[]): string {
   return lines.join("\n").trim();
 }
 
-function renderProvidedSourceContext(sourceIngests: LiteratureIngestResult[]): string {
+function renderPaperDigestContext(digests: PaperDigest[]): string {
+  if (digests.length === 0) return "";
+  const lines = ["# Paper Digests", ""];
+  for (const digest of digests) {
+    lines.push(`## ${digest.title}`);
+    lines.push(`- digest_id: ${digest.id}`);
+    lines.push(`- source_id: ${digest.sourceId}`);
+    lines.push(`- canonical_paper_key: ${digest.canonicalPaperKey}`);
+    lines.push(`- source_kind: ${digest.sourceKind}`);
+    lines.push(`- content_level: ${digest.contentLevel}`);
+    lines.push(`- discipline: ${digest.discipline}`);
+    lines.push(`- schema_family: ${digest.schemaFamily}`);
+    lines.push(`- schema_family_reason: ${digest.selectionReason}`);
+    if (digest.citationLine) lines.push(`- citation: ${digest.citationLine}`);
+    lines.push(`- summary: ${digest.oneSentenceSummary}`);
+    if (digest.researchProblem) lines.push(`- problem: ${digest.researchProblem}`);
+    if (digest.approach) lines.push(`- approach: ${digest.approach}`);
+    if (digest.keyContributions.length) lines.push(`- contributions: ${digest.keyContributions.join("; ")}`);
+    if (digest.keyClaims.length) lines.push(`- claims: ${digest.keyClaims.join("; ")}`);
+    if (digest.importantTerms.length) lines.push(`- important_terms: ${digest.importantTerms.join(", ")}`);
+    if (digest.findings.length) lines.push(`- findings: ${digest.findings.join("; ")}`);
+    if (digest.limitations.length) lines.push(`- limitations: ${digest.limitations.join("; ")}`);
+    const computational = digest.specialized.computationalEmpirical;
+    const experimental = digest.specialized.experimentalEmpirical;
+    const methodological = digest.specialized.methodologicalOrInstrumentation;
+    const theoretical = digest.specialized.theoreticalOrMathematical;
+    const review = digest.specialized.reviewOrSurvey;
+    if (computational.methods.length) lines.push(`- methods: ${computational.methods.join(", ")}`);
+    if (computational.methodFamily.length) lines.push(`- method_family: ${computational.methodFamily.join(", ")}`);
+    if (computational.datasets.length) lines.push(`- datasets: ${computational.datasets.join(", ")}`);
+    if (computational.benchmarks.length) lines.push(`- benchmarks: ${computational.benchmarks.join(", ")}`);
+    if (computational.metrics.length) lines.push(`- metrics: ${computational.metrics.join(", ")}`);
+    if (computational.comparators.length) lines.push(`- comparators: ${computational.comparators.join("; ")}`);
+    if (computational.failureModesOrRisks.length) lines.push(`- failure_modes_or_risks: ${computational.failureModesOrRisks.join("; ")}`);
+    if (experimental.studySystemOrSamples.length) lines.push(`- study_system_or_samples: ${experimental.studySystemOrSamples.join("; ")}`);
+    if (experimental.experimentalDesign.length) lines.push(`- experimental_design: ${experimental.experimentalDesign.join("; ")}`);
+    if (experimental.protocolsOrAssays.length) lines.push(`- protocols_or_assays: ${experimental.protocolsOrAssays.join("; ")}`);
+    if (experimental.measurementEndpoints.length) lines.push(`- measurement_endpoints: ${experimental.measurementEndpoints.join("; ")}`);
+    if (experimental.controlsOrComparators.length) lines.push(`- controls_or_comparators: ${experimental.controlsOrComparators.join("; ")}`);
+    if (experimental.sourcesOfBias.length) lines.push(`- sources_of_bias: ${experimental.sourcesOfBias.join("; ")}`);
+    if (methodological.resourceType.length) lines.push(`- resource_type: ${methodological.resourceType.join("; ")}`);
+    if (methodological.resourceScope.length) lines.push(`- resource_scope: ${methodological.resourceScope.join("; ")}`);
+    if (methodological.primaryUseCases.length) lines.push(`- primary_use_cases: ${methodological.primaryUseCases.join("; ")}`);
+    if (methodological.evaluationSetup.length) lines.push(`- evaluation_setup: ${methodological.evaluationSetup.join("; ")}`);
+    if (methodological.comparators.length) lines.push(`- methodological_comparators: ${methodological.comparators.join("; ")}`);
+    if (methodological.adoptionConstraints.length) lines.push(`- adoption_constraints: ${methodological.adoptionConstraints.join("; ")}`);
+    if (theoretical.formalSetting.length) lines.push(`- formal_setting: ${theoretical.formalSetting.join("; ")}`);
+    if (theoretical.assumptions.length) lines.push(`- assumptions: ${theoretical.assumptions.join("; ")}`);
+    if (theoretical.mainResults.length) lines.push(`- main_results: ${theoretical.mainResults.join("; ")}`);
+    if (theoretical.proofStrategy.length) lines.push(`- proof_strategy: ${theoretical.proofStrategy.join("; ")}`);
+    if (theoretical.scopeOfApplicability.length) lines.push(`- scope_of_applicability: ${theoretical.scopeOfApplicability.join("; ")}`);
+    if (theoretical.openProblems.length) lines.push(`- open_problems: ${theoretical.openProblems.join("; ")}`);
+    if (review.reviewScope.length) lines.push(`- review_scope: ${review.reviewScope.join("; ")}`);
+    if (review.selectionCriteria.length) lines.push(`- selection_criteria: ${review.selectionCriteria.join("; ")}`);
+    if (review.taxonomy.length) lines.push(`- taxonomy: ${review.taxonomy.join("; ")}`);
+    if (review.synthesisMethod.length) lines.push(`- synthesis_method: ${review.synthesisMethod.join("; ")}`);
+    if (review.evidenceGaps.length) lines.push(`- evidence_gaps: ${review.evidenceGaps.join("; ")}`);
+    if (review.controversies.length) lines.push(`- controversies: ${review.controversies.join("; ")}`);
+    if (digest.literatureReviewUse.usefulAs.length) lines.push(`- general_literature_review_use: ${digest.literatureReviewUse.usefulAs.join(", ")}`);
+    if (digest.literatureReviewUse.searchTerms.length) lines.push(`- reusable_search_terms: ${digest.literatureReviewUse.searchTerms.join(", ")}`);
+    if (digest.literatureReviewUse.expansionDirections.length) lines.push(`- expansion_directions: ${digest.literatureReviewUse.expansionDirections.join("; ")}`);
+    if (digest.uncertainty.length) lines.push(`- uncertainty: ${digest.uncertainty.join("; ")}`);
+    lines.push("");
+  }
+  return lines.join("\n").trim();
+}
+
+function renderPaperDigestFailureContext(failures: Array<Extract<PaperDigestResult, { status: "failed" }>>): string {
+  if (failures.length === 0) return "";
+  const lines = ["# Paper Digest Failures", ""];
+  for (const failure of failures) {
+    lines.push(`- source_id: ${failure.sourceId}; source_kind: ${failure.sourceKind}; reason: ${failure.reason}; retryable: ${String(failure.retryable)}; detail: ${failure.detail}`);
+  }
+  return lines.join("\n").trim();
+}
+
+function renderProvidedSourceContext(sources: PaperSource[]): string {
   const lines: string[] = [];
-  for (const item of sourceIngests) {
-    lines.push(`## ${item.source.title}`);
-    lines.push(`- id: ${item.source.id}`);
-    lines.push(`- source_type: ${item.source.sourceType}`);
-    if (item.source.url) lines.push(`- url: ${item.source.url}`);
-    if (item.source.authors?.length) lines.push(`- authors: ${item.source.authors.join(", ")}`);
-    if (item.source.publishedAt) lines.push(`- published: ${item.source.publishedAt}`);
-    lines.push(item.digest.digestMarkdown);
+  for (const source of sources) {
+    lines.push(`## ${source.title}`);
+    lines.push(`- id: ${source.id}`);
+    lines.push(`- source_type: ${source.sourceType}`);
+    if (source.url) lines.push(`- url: ${source.url}`);
+    if (source.authors?.length) lines.push(`- authors: ${source.authors.join(", ")}`);
+    if (source.publishedAt) lines.push(`- published: ${source.publishedAt}`);
+    if (source.doi) lines.push(`- doi: ${source.doi}`);
+    if (source.content) lines.push(source.content.slice(0, 1200));
     lines.push("");
   }
   return lines.join("\n").trim();
@@ -1694,6 +1931,12 @@ function firstMarkdownParagraph(markdown: string): string {
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value.trim() : String(value ?? "").trim();
+}
+
+function nullableString(value: unknown): string | null {
+  const text = asString(value);
+  if (!text || text.toLowerCase() === "null") return null;
+  return text;
 }
 
 function asStringArray(value: unknown): string[] {

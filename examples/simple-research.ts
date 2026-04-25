@@ -3,8 +3,9 @@ import {
   ExperimentDesignAgent,
   createResearchToolRegistry,
   HypothesisGenerationAgent,
-  LiteratureKnowledgeBase,
+  LiteratureReviewRuntimeStore,
   LiteratureReviewAgent,
+  PaperDigests,
   ProblemFramingAgent,
   ResearchGraphRegistry,
   SciAgent,
@@ -16,11 +17,12 @@ import {
 } from "../src/index.js";
 
 const memory = new SciMemory();
-const literature = new LiteratureKnowledgeBase();
+const literature = new LiteratureReviewRuntimeStore();
+const paperDigests = await PaperDigests.load(".kaivu/users/example-user/literature");
 const graph = new ResearchGraphRegistry();
 const capabilities = new ScientificCapabilityRegistry();
 const tools = createResearchToolRegistry(literature);
-const runtime = new SciRuntime(new EchoModelProvider(), tools, literature, capabilities);
+const runtime = new SciRuntime(new EchoModelProvider(), tools, literature, paperDigests, capabilities);
 const agent = new SciAgent({
   id: "chief_scientific_agent",
   discipline: "artificial_intelligence",
