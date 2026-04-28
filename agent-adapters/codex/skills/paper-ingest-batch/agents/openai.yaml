@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Ingest Batch"
+  short_description: "Orchestrate multi-paper literature wiki ingest"
+  default_prompt: "Ingest these papers into the literature wiki as a batch with parallel per-paper work and a cited summary."

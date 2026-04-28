@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Digest"
+  short_description: "Create structured paper digests"
+  default_prompt: "Digest this paper into a reusable structured literature asset."

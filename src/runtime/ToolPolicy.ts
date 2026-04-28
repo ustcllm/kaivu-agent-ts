@@ -11,7 +11,6 @@ export interface ScientificToolPolicyDecision {
 
 const TOOL_ACTION_MAP: Record<string, { action: string; riskLevel: "low" | "medium" | "high"; targetScope: string }> = {
   read_file: { action: "inspect_workspace", riskLevel: "low", targetScope: "local" },
-  query_literature_wiki: { action: "literature_query", riskLevel: "low", targetScope: "project" },
   openai_hosted_web_search: { action: "hosted_web_search", riskLevel: "low", targetScope: "public" },
   arxiv_search: { action: "literature_query", riskLevel: "low", targetScope: "public" },
   crossref_search: { action: "literature_query", riskLevel: "low", targetScope: "public" },

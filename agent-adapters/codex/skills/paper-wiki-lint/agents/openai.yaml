@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Wiki Lint"
+  short_description: "Health-check paper wiki pages"
+  default_prompt: "Lint this paper literature wiki for graph, evidence, and cross-reference issues."

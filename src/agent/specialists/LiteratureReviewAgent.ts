@@ -2,11 +2,11 @@ import { makeId } from "../../shared/ids.js";
 import type { ArtifactRef, StageResult } from "../../shared/StageContracts.js";
 import type { LiteratureReviewSynthesisInput, LiteratureStructuredExtraction } from "../../literature/LiteratureReviewRuntimeStore.js";
 import {
-  PaperDigests,
   type PaperDigest,
-  type PaperDigestInput,
   type PaperDigestResult,
 } from "../../literature/PaperDigest.js";
+import { PaperIngest, type PaperIngestBatchResult, type PaperIngestInput } from "../../literature/PaperIngest.js";
+import { WikiRetrieve } from "../../literature/WikiRetrieval.js";
 import type { PaperSource } from "./literature/PaperSource.js";
 import type { LiteratureSearchPaper } from "../../shared/LiteratureSearchTypes.js";
 import {
@@ -101,7 +101,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
       });
     }
     usefulPapers = await this.downloadUsefulPapers(input, usefulPapers);
-    const paperDigestRun = await this.digestUsefulPapers(input, usefulPapers, problemFrame.discipline);
+    const paperDigestRun = await this.ingestUsefulPapers(input, usefulPapers, problemFrame.discipline);
     const paperDigests = paperDigestRun.digests;
     const retrievedSourceContext = renderUsefulPaperContext(usefulPapers);
     const paperDigestContext = renderPaperDigestContext(paperDigests);
@@ -119,6 +119,8 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
         downloadedPaperCount: usefulPapers.filter((paper) => paper.localPath).length,
         paperDigestCount: paperDigests.length,
         paperDigestFailureCount: paperDigestRun.failures.length,
+        paperWikiWriteStatus: paperDigestRun.wikiIngest.write.status,
+        paperWikiWrittenFileCount: paperDigestRun.wikiIngest.write.writtenFiles.length,
         referenceExpansionRounds: expansionSummaries,
         providedSourceCount: providedSources.length,
       },
@@ -209,6 +211,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
                 usefulPapers: usefulPapers.map(summarizeUsefulPaper),
                 paperDigests: paperDigests.map(summarizePaperDigest),
                 paperDigestFailures: paperDigestRun.failures,
+                paperWikiIngest: paperDigestRun.wikiIngest,
               },
               referenceExpansionRounds: expansionSummaries,
               note: "Literature retrieval used the configured live search tools and kept results in the shared literature-search output contract.",
@@ -237,6 +240,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
             structuredExtraction,
             paperDigests: paperDigests.map(summarizePaperDigest),
             paperDigestFailures: paperDigestRun.failures,
+            paperWikiIngest: paperDigestRun.wikiIngest,
           },
         },
         {
@@ -255,6 +259,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
               storage: {
                 literatureRuntimeStore: ["citation library", "runtime review records", "claim/conflict runtime state"],
                 paperDigests: ["paper digest cache", "paper digest failures"],
+                literatureWiki: input.literatureWikiRoot,
                 memory: "project/reference memory proposal titled Literature review digest",
             },
           },
@@ -285,6 +290,7 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
                 usefulPapers: usefulPapers.map(summarizeUsefulPaper),
                 paperDigests,
                 paperDigestFailures: paperDigestRun.failures,
+                paperWikiIngest: paperDigestRun.wikiIngest,
                 referenceExpansionRounds: expansionSummaries,
                 rejectedQueries: screenedQueries.rejected,
                 claimTable: input.literature?.renderClaimTable(),
@@ -681,61 +687,38 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
     return downloaded;
   }
 
-  private async digestUsefulPapers(
+  private async ingestUsefulPapers(
     input: SpecialistRunInput,
     usefulPapers: UsefulLiteraturePaper[],
     disciplineHint?: string,
   ): Promise<PaperDigestBatchResult> {
-    const service = new PaperDigests(
+    if (!input.paperDigests) {
+      throw new Error("LiteratureReviewAgent requires PaperDigests for paper ingest.");
+    }
+    if (!input.literatureWikiRoot) {
+      throw new Error("LiteratureReviewAgent requires literatureWikiRoot for paper ingest.");
+    }
+    const discipline = normalizeDigestDisciplineHint(disciplineHint);
+    const service = new PaperIngest(
       (options) => this.modelStep(input, options),
-      undefined,
+      input.paperDigests,
+      new WikiRetrieve(),
       {
         pdfUrlReadSupport: input.model.pdfUrlReadSupport ?? "unsupported",
         pdfFileReadSupport: input.model.pdfFileReadSupport ?? "unsupported",
       },
     );
-    const inputs = usefulPapers.map((paper) => paperDigestInputFromUsefulPaper(paper, disciplineHint));
-    const cachedDigests: PaperDigest[] = [];
-    const uncachedInputs: PaperDigestInput[] = [];
-    const seenKeys = new Set<string>();
-    for (const digestInput of inputs) {
-      const cached = input.paperDigests?.lookupPaperDigest(digestInput);
-      if (cached) {
-        cachedDigests.push(cached);
-        continue;
-      }
-      const key = paperDigestInputCacheKey(digestInput);
-      if (seenKeys.has(key)) continue;
-      seenKeys.add(key);
-      uncachedInputs.push(digestInput);
-    }
-    const freshBatch: PaperDigestBatchResult = {
-      digests: [],
-      failures: [],
-    };
-    for (const digestInput of uncachedInputs) {
-      const result = await service.digest(digestInput);
-      if (result.status === "completed") {
-        freshBatch.digests.push(result.digest);
-      } else {
-        freshBatch.failures.push(result);
-      }
-    }
-    for (const digest of freshBatch.digests) {
-      const sourceInput = uncachedInputs.find((item) => item.sourceId === digest.sourceId);
-      if (sourceInput) {
-        input.paperDigests?.recordPaperDigest(sourceInput, digest);
-      }
-    }
-    const batch: PaperDigestBatchResult = {
-      digests: [...cachedDigests, ...freshBatch.digests],
-      failures: freshBatch.failures,
-    };
-    for (const digest of batch.digests) {
-            input.paperDigests?.resolvePaperDigestFailureByCanonicalKey(digest.canonicalPaperKey, digest.sourceKind);
-            input.paperDigests?.resolvePaperDigestFailure(digest.sourceId, digest.sourceKind);
+    const paperInputs = usefulPapers.map((paper) => paperIngestInputFromUsefulPaper(paper, disciplineHint));
+    const uniqueInputs = dedupeByKey(paperInputs, paperIngestInputCacheKey);
+    const ingestResult = await service.ingestBatch(uniqueInputs.map((paper) => ({
+      paper,
+      wikiRoot: input.literatureWikiRoot!,
+      ...(discipline ? { discipline } : {}),
+    })));
+    const failures = ingestResult.failures.flatMap((failure) => failure.digestFailure ? [failure.digestFailure] : []);
+    for (const digest of ingestResult.digests) {
       input.onProgress?.({
-        label: cachedDigests.some((item) => item.id === digest.id) ? "Reuse cached paper digest" : "Digest paper",
+        label: ingestResult.completed.some((item) => item.digest.id === digest.id) ? "Ingest paper into wiki" : "Reuse ingested paper",
         detail: digest.title || digest.sourceId,
         data: {
           sourceId: digest.sourceId,
@@ -743,15 +726,18 @@ export class LiteratureReviewAgent extends BaseSpecialistAgent {
           digestId: digest.id,
           sourceKind: digest.sourceKind,
           contentLevel: digest.contentLevel,
-          pdfUrl: findPdfUrlDigestInput(inputs, digest.sourceId)?.pdfUrl,
+          pdfUrl: findPdfUrlIngestInput(paperInputs, digest.sourceId)?.pdfUrl,
           notesIncluded: false,
+          wikiRoot: input.literatureWikiRoot,
+          wikiPages: ingestResult.lookupIndex[digest.canonicalPaperKey]?.length ?? 0,
         },
       });
     }
-    for (const failure of batch.failures) {
-          input.paperDigests?.recordPaperDigestFailure(failure);
-    }
-    return batch;
+    return {
+      digests: ingestResult.digests,
+      failures,
+      wikiIngest: ingestResult,
+    };
   }
 
   private planSearchSteps(searchQueries: Array<{ query: string; language: string; purpose: string; disciplineScope?: string }>) {
@@ -967,6 +953,7 @@ interface LiteratureExpansionSummary {
 interface PaperDigestBatchResult {
   digests: PaperDigest[];
   failures: Array<Extract<PaperDigestResult, { status: "failed" }>>;
+  wikiIngest: PaperIngestBatchResult;
 }
 
 const LITERATURE_QUERY_PLAN_SCHEMA: StructuredSchema = {
@@ -1562,7 +1549,7 @@ function paperPdfUrl(paper: UsefulLiteraturePaper): string | undefined {
   return link;
 }
 
-function paperDigestInputFromUsefulPaper(paper: UsefulLiteraturePaper, disciplineHint?: string): PaperDigestInput {
+function paperIngestInputFromUsefulPaper(paper: UsefulLiteraturePaper, disciplineHint?: string): PaperIngestInput {
   const normalizedDisciplineHint = normalizeDigestDisciplineHint(disciplineHint);
   const pdfUrl = paperPdfUrl(paper);
   if (!pdfUrl) {
@@ -1581,11 +1568,20 @@ function paperDigestInputFromUsefulPaper(paper: UsefulLiteraturePaper, disciplin
   };
 }
 
-function findPdfUrlDigestInput(inputs: PaperDigestInput[], sourceId: string): Extract<PaperDigestInput, { kind: "pdf_url" }> | undefined {
-  return inputs.find((item): item is Extract<PaperDigestInput, { kind: "pdf_url" }> => item.sourceId === sourceId && item.kind === "pdf_url");
+function findPdfUrlIngestInput(inputs: PaperIngestInput[], sourceId: string): Extract<PaperIngestInput, { kind: "pdf_url" }> | undefined {
+  return inputs.find((item): item is Extract<PaperIngestInput, { kind: "pdf_url" }> => item.sourceId === sourceId && item.kind === "pdf_url");
 }
 
-function paperDigestInputCacheKey(input: PaperDigestInput): string {
+function dedupeByKey<T>(items: T[], keyOf: (item: T) => string): T[] {
+  const byKey = new Map<string, T>();
+  for (const item of items) {
+    const key = keyOf(item);
+    if (!byKey.has(key)) byKey.set(key, item);
+  }
+  return [...byKey.values()];
+}
+
+function paperIngestInputCacheKey(input: PaperIngestInput): string {
   if (input.kind === "pdf_url") {
     return `pdf_url:${input.pdfUrl.trim().toLowerCase()}`;
   }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Wiki Query"
+  short_description: "Answer questions from paper wiki pages"
+  default_prompt: "Answer this question using the paper wiki with citations."

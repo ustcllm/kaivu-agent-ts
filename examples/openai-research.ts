@@ -26,7 +26,7 @@ const model = new OpenAIResponsesModelProvider({
   model: process.env.KAIVU_MODEL ?? "gpt-5-mini",
   reasoningEffort: "medium",
 });
-const runtime = new SciRuntime(model, new ToolRegistry(), literature, paperDigests, new ScientificCapabilityRegistry());
+const runtime = new SciRuntime(model, new ToolRegistry(), literature, paperDigests, ".kaivu/users/example-user/literature/wiki", new ScientificCapabilityRegistry());
 const agent = new SciAgent({
   id: "chief_scientific_agent",
   discipline: "artificial_intelligence",

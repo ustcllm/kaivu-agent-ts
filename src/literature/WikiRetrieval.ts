@@ -6,13 +6,6 @@ import {
   parseLiteratureWikiPageMarkdown,
   type LiteratureWikiPage,
 } from "./LiteratureWikiPage.js";
-import {
-  NaiveWikiSearch,
-  type LoadedWikiPage,
-  type WikiSearch,
-  type WikiSearchMatch,
-  type WikiSearchContext,
-} from "./WikiSearch.js";
 
 export type WikiRetrieveMode =
   | "auto"
@@ -53,6 +46,63 @@ export interface WikiRetrieveResult {
   rationale: string[];
 }
 
+interface LoadedWikiPage {
+  page: LiteratureWikiPage;
+  path: string;
+  raw: string;
+}
+
+interface WikiSearchContext {
+  hotPageKeys: Set<string>;
+  indexPageKeys: Set<string>;
+  disciplineIndexPageKeys: Set<string>;
+}
+
+interface WikiSearchRequest {
+  query: string;
+  pages: LoadedWikiPage[];
+  disciplineScope?: LiteratureDiscipline[];
+  context?: WikiSearchContext;
+}
+
+interface WikiSearchMatch {
+  loaded: LoadedWikiPage;
+  score: number;
+  snippet: string;
+  reasons: string[];
+}
+
+interface WikiSearch {
+  search(input: WikiSearchRequest): { query: string; matches: WikiSearchMatch[] };
+}
+
+class NaiveWikiSearch implements WikiSearch {
+  search(input: WikiSearchRequest): { query: string; matches: WikiSearchMatch[] } {
+    const disciplineScope = normalizeDisciplineScope(input.disciplineScope);
+    const context = input.context ?? emptySearchContext();
+    const tokens = tokenizeQuery(input.query);
+    const loweredQuery = input.query.trim().toLowerCase();
+    const matches: WikiSearchMatch[] = [];
+
+    for (const loaded of input.pages) {
+      if (disciplineScope.length > 0 && !disciplineScope.includes(loaded.page.discipline)) continue;
+      const score = scorePageMatch(loaded, loweredQuery, tokens, context);
+      if (score.score <= 0) continue;
+      matches.push({
+        loaded,
+        score: score.score,
+        snippet: score.snippet,
+        reasons: score.reasons,
+      });
+    }
+
+    return {
+      query: input.query,
+      matches: matches.sort((left, right) => right.score - left.score),
+    };
+  }
+}
+
 interface WikiPageFileRecord {
   pageKey: string;
   discipline: LiteratureDiscipline;
@@ -76,6 +126,17 @@ interface WikiSpecialContext {
   disciplineIndexTargets: Set<string>;
 }
 
+/**
+ * Retrieval over the persistent literature wiki.
+ *
+ * Use this for:
+ * - gathering long-term compiled wiki context before ingest planning
+ * - retrieving historical topic/claim/synthesis context during batch cross-reference
+ * - future persistent-wiki query and reading-set construction
+ *
+ * This is intentionally separate from LiteratureReviewRuntimeStore.search(),
+ * which only searches the review-time runtime working set.
+ */
 export class WikiRetrieve {
   constructor(private readonly searchBackend: WikiSearch = new NaiveWikiSearch()) {}
 
@@ -281,14 +342,15 @@ export class WikiRetrieve {
 
   private selectLandscapePrimaryPages(ranked: WikiSearchMatch[], limit: number): WikiSearchMatch[] {
     return this.selectQuotaPrimaryPages(ranked, limit, [
-      { kind: "overview", max: 1 },
       { kind: "synthesis", max: 2 },
       { kind: "topic", max: 2 },
       { kind: "claim", max: 2 },
+      { kind: "research_question", max: 1 },
+      { kind: "finding", max: 1 },
+      { kind: "formal_result", max: 1 },
       { kind: "paper", max: 2 },
-      { kind: "concept", max: 1 },
       { kind: "method", max: 1 },
-      { kind: "task", max: 1 },
+      { kind: "benchmark", max: 1 },
     ]);
   }
 
@@ -363,23 +425,27 @@ export class WikiRetrieve {
 }
 
 async function collectMarkdownFiles(root: string): Promise<string[]> {
-  const entries = await readdir(root, { withFileTypes: true });
-  const files: string[] = [];
-  for (const entry of entries) {
-    const path = join(root, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...await collectMarkdownFiles(path));
-    } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
-      files.push(path);
+  try {
+    const entries = await readdir(root, { withFileTypes: true });
+    const files: string[] = [];
+    for (const entry of entries) {
+      const path = join(root, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...await collectMarkdownFiles(path));
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+        files.push(path);
+      }
     }
+    return files;
+  } catch {
+    return [];
   }
-  return files;
 }
 
 function kindWeight(kind: LiteratureWikiPage["kind"], mode: Exclude<WikiRetrieveMode, "auto">): number {
   switch (mode) {
     case "landscape":
-      return kind === "overview" ? 5 : kind === "synthesis" ? 4 : kind === "topic" ? 3 : kind === "claim" ? 2 : 1;
+      return kind === "synthesis" ? 4 : kind === "topic" ? 3 : kind === "claim" ? 2 : 1;
     case "claim_first":
       return kind === "claim" ? 5 : kind === "synthesis" ? 4 : kind === "topic" ? 3 : kind === "paper" ? 2 : 1;
     case "topic_first":
@@ -392,11 +458,11 @@ function kindWeight(kind: LiteratureWikiPage["kind"], mode: Exclude<WikiRetrieve
 function seedTargetsForMode(mode: Exclude<WikiRetrieveMode, "auto">): string[] {
   switch (mode) {
     case "landscape":
-      return ["literature_overview"];
+      return [];
     case "claim_first":
       return [];
     case "topic_first":
-      return ["literature_overview"];
+      return [];
     case "paper_first":
       return [];
   }
@@ -405,13 +471,13 @@ function seedTargetsForMode(mode: Exclude<WikiRetrieveMode, "auto">): string[] {
 function preferredKindsForMode(mode: Exclude<WikiRetrieveMode, "auto">): LiteratureWikiPage["kind"][] {
   switch (mode) {
     case "landscape":
-      return ["overview", "synthesis", "topic", "claim", "paper"];
+      return ["synthesis", "topic", "claim", "paper"];
     case "claim_first":
-      return ["claim", "synthesis", "topic", "paper", "overview"];
+      return ["claim", "synthesis", "topic", "paper"];
     case "topic_first":
-      return ["topic", "synthesis", "claim", "overview", "paper"];
+      return ["topic", "synthesis", "claim", "paper"];
     case "paper_first":
-      return ["paper", "claim", "topic", "synthesis", "overview"];
+      return ["paper", "claim", "topic", "synthesis"];
   }
 }
 
@@ -419,8 +485,8 @@ function decideRetrieveMode(query: string, preferred: WikiRetrieveMode | undefin
   if (preferred && preferred !== "auto") return preferred;
   const lowered = query.toLowerCase();
   if (/\bclaim|debate|contradict|consensus|evidence\b/u.test(lowered)) return "claim_first";
-  if (/\bpaper|author|article|study\b/u.test(lowered)) return "paper_first";
-  if (/\btopic|theme|overview|landscape|field\b/u.test(lowered)) return "topic_first";
+  if (/\bpaper|article|study\b/u.test(lowered)) return "paper_first";
+  if (/\btopic|theme|landscape|field\b/u.test(lowered)) return "topic_first";
   return "landscape";
 }
 
@@ -474,6 +540,81 @@ function buildRetrieveRationale(
 
 function dedupeStrings(values: string[]): string[] {
   return [...new Set(values.filter((value) => value.trim().length > 0))];
+}
+
+function emptySearchContext(): WikiSearchContext {
+  return {
+    hotPageKeys: new Set<string>(),
+    indexPageKeys: new Set<string>(),
+    disciplineIndexPageKeys: new Set<string>(),
+  };
+}
+
+function tokenizeQuery(query: string): string[] {
+  return query
+    .toLowerCase()
+    .split(/[^a-z0-9_]+/u)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 2);
+}
+
+function scorePageMatch(
+  loaded: LoadedWikiPage,
+  loweredQuery: string,
+  tokens: string[],
+  context: WikiSearchContext,
+): { score: number; snippet: string; reasons: string[] } {
+  const page = loaded.page;
+  const haystacks = [
+    { field: "title", text: page.title.toLowerCase(), weight: 6 },
+    { field: "summary", text: page.summary.toLowerCase(), weight: 4 },
+    { field: "page_key", text: page.pageKey.toLowerCase(), weight: 3 },
+    { field: "tags", text: page.tags.join(" ").toLowerCase(), weight: 2 },
+    { field: "aliases", text: page.aliases.join(" ").toLowerCase(), weight: 2 },
+    { field: "body", text: loaded.raw.toLowerCase(), weight: 1 },
+  ];
+
+  let score = 0;
+  const reasons: string[] = [];
+  for (const haystack of haystacks) {
+    if (loweredQuery && haystack.text.includes(loweredQuery)) {
+      score += haystack.weight * 2;
+      reasons.push(`matched ${haystack.field}`);
+    }
+    for (const token of tokens) {
+      if (haystack.text.includes(token)) score += haystack.weight;
+    }
+  }
+
+  if (context.hotPageKeys.has(page.pageKey)) {
+    score += 3;
+    reasons.push("mentioned in hot.md");
+  }
+  if (context.indexPageKeys.has(page.pageKey)) {
+    score += 1.5;
+    reasons.push("mentioned in index.md");
+  }
+  if (context.disciplineIndexPageKeys.has(page.pageKey)) {
+    score += 2;
+    reasons.push("mentioned in discipline index");
+  }
+
+  const snippet = extractSnippet(loaded.raw, loweredQuery || tokens[0] || "") ?? page.summary;
+  return {
+    score,
+    snippet,
+    reasons: dedupeStrings(reasons),
+  };
+}
+
+function extractSnippet(raw: string, term: string): string | null {
+  if (!term) return null;
+  const lowered = raw.toLowerCase();
+  const index = lowered.indexOf(term.toLowerCase());
+  if (index < 0) return null;
+  const start = Math.max(0, index - 80);
+  const end = Math.min(raw.length, index + term.length + 120);
+  return raw.slice(start, end).replace(/\s+/gu, " ").trim();
 }
 
 function pageFileRecordFromPath(root: string, path: string): WikiPageFileRecord | null {
@@ -607,28 +748,22 @@ function pageKindFromDirectory(directory: string): LiteratureWikiPage["kind"] | 
   switch (directory) {
     case "papers":
       return "paper";
-    case "authors":
-      return "author";
-    case "concepts":
-      return "concept";
+    case "research_questions":
+      return "research_question";
     case "methods":
       return "method";
-    case "tasks":
-      return "task";
-    case "evidence_sources":
-      return "evidence_source";
-    case "evaluation_setups":
-      return "evaluation_setup";
-    case "measures":
-      return "measure";
+    case "benchmarks":
+      return "benchmark";
+    case "findings":
+      return "finding";
+    case "formal_results":
+      return "formal_result";
     case "claims":
       return "claim";
     case "topics":
       return "topic";
     case "syntheses":
       return "synthesis";
-    case "overview":
-      return "overview";
     default:
       return null;
   }

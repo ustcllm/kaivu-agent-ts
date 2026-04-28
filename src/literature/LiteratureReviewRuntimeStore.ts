@@ -119,12 +119,23 @@ export interface LiteratureReviewSynthesisRecord {
  * Not responsible for persistent paper-digest assets; those live in PaperDigests.
  * Paper pages, claim pages, topic synthesis pages, and other compiled wiki
  * knowledge should progressively live in the literature wiki file layer.
+ *
+ * Guardrails:
+ * - `pages` are runtime index cards for retrieved sources and review records,
+ *   not long-term wiki pages
+ * - `claims` are review-time extraction records and conflict inputs, not the
+ *   final claim-page schema
+ * - `reviewSyntheses` are task records describing one review run, not durable
+ *   synthesis pages in the wiki
  */
 export class LiteratureReviewRuntimeStore {
   private readonly citations = new Map<string, CitationRecord>();
+  // Runtime-only lookup pages for review execution. Keep these lightweight.
   private readonly pages = new Map<string, LiteratureRuntimePage>();
+  // Review-time claim extraction records. Do not grow this into wiki claim-page content.
   private readonly claims: LiteratureClaimRecord[] = [];
   private readonly conflictGroups = new Map<string, LiteratureConflictGroup>();
+  // Records of review runs. These may later inform wiki synthesis pages, but are not them.
   private readonly reviewSyntheses: LiteratureReviewSynthesisRecord[] = [];
   private readonly log: Array<{ timestamp: string; action: string; targetId: string; detail: string }> = [];
 
@@ -179,6 +190,17 @@ export class LiteratureReviewRuntimeStore {
     return record;
   }
 
+  /**
+   * Search only the review-time runtime working set.
+   *
+   * Use this for:
+   * - retrieved source cards from the current or recent review workflow
+   * - runtime synthesis records
+   * - lightweight claim/conflict lookup during review execution
+   *
+   * Do not use this as a substitute for persistent wiki retrieval.
+   * For compiled long-term literature knowledge, use WikiRetrieve instead.
+   */
   search(query: string, limit = 6): LiteratureRuntimePage[] {
     const terms = query.toLowerCase().split(/[^a-z0-9\u4e00-\u9fff]+/u).filter(Boolean);
     return [...this.pages.values()]

@@ -21,8 +21,8 @@ const literature = new LiteratureReviewRuntimeStore();
 const paperDigests = await PaperDigests.load(".kaivu/users/example-user/literature");
 const graph = new ResearchGraphRegistry();
 const capabilities = new ScientificCapabilityRegistry();
-const tools = createResearchToolRegistry(literature);
-const runtime = new SciRuntime(new EchoModelProvider(), tools, literature, paperDigests, capabilities);
+const tools = createResearchToolRegistry();
+const runtime = new SciRuntime(new EchoModelProvider(), tools, literature, paperDigests, ".kaivu/users/example-user/literature/wiki", capabilities);
 const agent = new SciAgent({
   id: "chief_scientific_agent",
   discipline: "artificial_intelligence",

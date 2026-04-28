@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Wiki"
+  short_description: "Route paper digest, ingest, query, lint, and wiki filing"
+  default_prompt: "Route this paper wiki task to the right digest, ingest, query, lint, or batch workflow."

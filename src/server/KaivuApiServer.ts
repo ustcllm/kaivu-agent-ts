@@ -13,7 +13,7 @@ import { OpenAIAuthService } from "../auth/OpenAIAuthService.js";
 import { ScientificCapabilityRegistry } from "../capabilities/ScientificCapabilityRegistry.js";
 import { ResearchGraphRegistry } from "../graph/ResearchGraph.js";
 import { PaperDigests } from "../literature/PaperDigest.js";
-import { userLiteratureDigestRoot } from "../literature/LiteraturePaths.js";
+import { userLiteratureDigestRoot, userLiteratureWikiRoot } from "../literature/LiteraturePaths.js";
 import { LiteratureReviewRuntimeStore } from "../literature/LiteratureReviewRuntimeStore.js";
 import type { ResearchState } from "../shared/ResearchStateTypes.js";
 import { applyStageResult } from "../loop/ResearchState.js";
@@ -81,6 +81,7 @@ interface ResearchSession {
   graph: ResearchGraphRegistry;
   literatureRuntime: LiteratureReviewRuntimeStore;
   paperDigests: PaperDigests;
+  literatureWikiRoot: string;
 }
 
 export class KaivuApiServer {
@@ -160,9 +161,10 @@ export class KaivuApiServer {
     }
     const runtime = new SciRuntime(
       model,
-      createResearchToolRegistry(session.literatureRuntime),
+      createResearchToolRegistry(),
       session.literatureRuntime,
       session.paperDigests,
+      session.literatureWikiRoot,
       new ScientificCapabilityRegistry(),
       undefined,
       session.graph,
@@ -221,6 +223,7 @@ export class KaivuApiServer {
       graph: new ResearchGraphRegistry(),
       literatureRuntime: new LiteratureReviewRuntimeStore(),
       paperDigests: await PaperDigests.load(userLiteratureDigestRoot(process.cwd(), userId)),
+      literatureWikiRoot: userLiteratureWikiRoot(process.cwd(), userId),
     };
     this.researchSessions.set(session.id, session);
     return session;

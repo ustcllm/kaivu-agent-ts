@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Wiki Search"
+  short_description: "Retrieve relevant paper wiki pages"
+  default_prompt: "Find the most relevant paper wiki pages for this question or ingest context."

@@ -187,6 +187,12 @@ The runtime store should own structured execution-time support data for review w
 
 The runtime store should not become the long-term source of truth for compiled wiki pages.
 
+Keep the following boundaries tight:
+
+- runtime `pages` are lightweight review-time index cards, not persistent wiki pages
+- runtime `claims` are extraction and conflict-mapping records, not the full claim-page content model
+- runtime `reviewSyntheses` are records of review runs, not long-term wiki synthesis pages
+
 ## Practical Rule
 
 When adding a new literature feature, decide first:
@@ -230,12 +236,7 @@ The wiki should expose a retrieval-facing API as a top-level operation:
 Internally, retrieval may perform search as one step, but the public concept should stay centered on retrieval rather than exposing raw search as the primary workflow.
 `WikiRetrieve` should require an explicit `disciplineScope` from upstream problem framing rather than inferring it silently at retrieval time.
 
-The internal search step should be replaceable behind a dedicated backend interface:
-
-- `WikiSearch`: internal search backend contract
-- `NaiveWikiSearch`: the default local markdown search implementation
-
-This keeps retrieval behavior stable while allowing future backends such as `qmd` to plug in without changing the retrieval protocol itself.
+The search step is an internal part of `WikiRetrieve`, not a separate public API. The implementation may still evolve over time, including swapping in stronger backends such as `qmd`, but that should remain behind `WikiRetrieve` so callers only see one retrieval surface.
 
 Retrieval modes should be named after the reading objective, not after a page kind. For example, a broad top-level reading mode should be described as `landscape`, not `overview_first`, because `overview` remains a specific page type with a narrower semantic role.
 
@@ -246,3 +247,28 @@ In practice, retrieval should:
 3. weight by page kind and discipline scope
 4. optionally expand through explicit wiki links
 5. return a compact reading set and rationale
+
+## Runtime Search vs Wiki Retrieval
+
+These two search-like entry points serve different layers and should not drift into each other.
+
+### `LiteratureReviewRuntimeStore.search()`
+
+Use runtime search for the review execution working set:
+
+- retrieved source cards
+- runtime review records
+- review-time claim/conflict lookup
+
+This is for "what has this review workflow already touched or extracted?".
+
+### `WikiRetrieve`
+
+Use wiki retrieval for persistent compiled knowledge:
+
+- overview, synthesis, topic, claim, and paper pages in the literature wiki
+- ingest-time related-page gathering
+- batch cross-reference history lookup
+- future persistent-wiki question answering
+
+This is for "what does the maintained literature wiki already know?".

@@ -45,14 +45,14 @@ export function defaultScientificSkillRegistry(): SkillRegistry {
     description: "Build source-backed digests, claim tables, conflict maps, and evidence gaps.",
     whenToUse: "Use when a stage needs scholarly evidence synthesis or systematic review updates.",
     prompt: "Synthesize literature with explicit source quality, conflicts, and uncertainty.",
-    allowedTools: ["arxiv_search", "crossref_search", "pubmed_search", "resolve_citation", "query_literature_wiki"],
+    allowedTools: ["arxiv_search", "crossref_search", "pubmed_search", "resolve_citation"],
   });
   registry.register({
     name: "hypothesis-validation",
     description: "Validate novelty, feasibility, falsifiability, and evidence readiness.",
     whenToUse: "Use before experiment design or when a hypothesis changed materially.",
     prompt: "Review each hypothesis against novelty, feasibility, falsifiability, mechanism, and rival explanations.",
-    allowedTools: ["search_memory", "query_typed_graph", "query_literature_wiki"],
+    allowedTools: ["search_memory", "query_typed_graph"],
   });
   return registry;
 }

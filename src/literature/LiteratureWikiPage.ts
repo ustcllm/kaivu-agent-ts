@@ -1,18 +1,17 @@
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import type { LiteratureDiscipline, PaperDigestSchemaFamily } from "./PaperDigest.js";
 
 export type SupportedLiteratureWikiPageKind =
   | "paper"
-  | "author"
-  | "concept"
+  | "research_question"
   | "method"
-  | "task"
-  | "evidence_source"
-  | "evaluation_setup"
-  | "measure"
+  | "benchmark"
+  | "finding"
+  | "formal_result"
   | "claim"
   | "topic"
-  | "synthesis"
-  | "overview";
+  | "synthesis";
 
 export interface BaseLiteratureWikiPage {
   schemaVersion: "kaivu-literature-wiki-page-v1";
@@ -57,12 +56,74 @@ export interface LiteratureWikiClaimPage extends BaseLiteratureWikiPage {
   notes: string[];
 }
 
-export interface LiteratureWikiEntityPage extends BaseLiteratureWikiPage {
-  kind: "author" | "concept" | "method" | "task" | "evidence_source" | "evaluation_setup" | "measure";
-  statement: string;
-  rationale: string;
+export interface LiteratureWikiResearchQuestionPage extends BaseLiteratureWikiPage {
+  kind: "research_question";
+  question: string;
+  motivation: string;
+  currentAnswer: string;
+  relatedTopicKeys: string[];
+  claimPageKeys: string[];
+  findingPageKeys: string[];
+  methodPageKeys: string[];
+  benchmarkKeys: string[];
+  openSubquestions: string[];
   relatedPageKeys: string[];
-  patchOutline: string[];
+}
+
+export interface LiteratureWikiBenchmarkPage extends BaseLiteratureWikiPage {
+  kind: "benchmark";
+  benchmarkStatement: string;
+  evaluates: string[];
+  datasetOrSuite: string;
+  metrics: string[];
+  knownCaveats: string[];
+  usedByPaperKeys: string[];
+  relatedMethodKeys: string[];
+  relatedFindingKeys: string[];
+  relatedPageKeys: string[];
+}
+
+export interface LiteratureWikiFindingPage extends BaseLiteratureWikiPage {
+  kind: "finding";
+  findingStatement: string;
+  evidenceType: string;
+  supportingPaperKeys: string[];
+  relatedMethodKeys: string[];
+  relatedBenchmarkKeys: string[];
+  supportsClaimKeys: string[];
+  qualifiesClaimKeys: string[];
+  contradictsClaimKeys: string[];
+  caveats: string[];
+  relatedPageKeys: string[];
+}
+
+export interface LiteratureWikiFormalResultPage extends BaseLiteratureWikiPage {
+  kind: "formal_result";
+  formalResultType: "theorem" | "lemma" | "corollary" | "proposition" | "conjecture" | "bound" | "guarantee" | "other";
+  statement: string;
+  assumptions: string[];
+  proofIdea: string;
+  dependsOnResultKeys: string[];
+  supportsClaimKeys: string[];
+  relatedMethodKeys: string[];
+  limitations: string[];
+  relatedPageKeys: string[];
+}
+
+export interface LiteratureWikiMethodPage extends BaseLiteratureWikiPage {
+  kind: "method";
+  methodStatement: string;
+  mechanism: string[];
+  assumptions: string[];
+  inputs: string[];
+  outputs: string[];
+  variants: string[];
+  baselines: string[];
+  failureModes: string[];
+  relatedBenchmarkKeys: string[];
+  relatedFindingKeys: string[];
+  relatedFormalResultKeys: string[];
+  relatedPageKeys: string[];
 }
 
 export interface LiteratureWikiTopicPage extends BaseLiteratureWikiPage {
@@ -90,25 +151,16 @@ export interface LiteratureWikiSynthesisPage extends BaseLiteratureWikiPage {
   openQuestions: string[];
 }
 
-export interface LiteratureWikiOverviewPage extends BaseLiteratureWikiPage {
-  kind: "overview";
-  executiveSummary: string;
-  currentPicture: string[];
-  keyTensions: string[];
-  majorThemePageKeys: string[];
-  synthesisPageKeys: string[];
-  keyClaimPageKeys: string[];
-  startHerePageKeys: string[];
-  openFrontPageKeys: string[];
-}
-
 export type LiteratureWikiPage =
   | LiteratureWikiPaperPage
-  | LiteratureWikiEntityPage
+  | LiteratureWikiResearchQuestionPage
+  | LiteratureWikiBenchmarkPage
+  | LiteratureWikiFindingPage
+  | LiteratureWikiFormalResultPage
+  | LiteratureWikiMethodPage
   | LiteratureWikiClaimPage
   | LiteratureWikiTopicPage
-  | LiteratureWikiSynthesisPage
-  | LiteratureWikiOverviewPage;
+  | LiteratureWikiSynthesisPage;
 
 export interface LiteratureWikiGraphSnapshot {
   pageCount: number;
@@ -118,36 +170,37 @@ export interface LiteratureWikiGraphSnapshot {
   danglingReferences: Array<{ fromPageKey: string; toPageKey: string }>;
 }
 
-export function literatureWikiPagePath(root: string, page: LiteratureWikiPage): string {
-  return `${root.replace(/[\\/]+$/u, "")}/${literatureWikiPageDirectory(page.discipline, page.kind)}/${safeWikiPageKey(page.pageKey)}.md`;
+export type LiteratureWikiLookupIndex = Record<string, LiteratureWikiPage[]>;
+
+export function literatureWikiPagePath(
+  root: string,
+  discipline: LiteratureDiscipline,
+  kind: SupportedLiteratureWikiPageKind,
+  pageKey: string,
+): string {
+  return `${root.replace(/[\\/]+$/u, "")}/${literatureWikiPageDirectory(discipline, kind)}/${safeWikiPageKey(pageKey)}.md`;
 }
 
 export function literatureWikiPageDirectory(discipline: LiteratureDiscipline, kind: SupportedLiteratureWikiPageKind): string {
   switch (kind) {
     case "paper":
       return `${discipline}/papers`;
-    case "author":
-      return `${discipline}/authors`;
-    case "concept":
-      return `${discipline}/concepts`;
+    case "research_question":
+      return `${discipline}/research_questions`;
     case "method":
       return `${discipline}/methods`;
-    case "task":
-      return `${discipline}/tasks`;
-    case "evidence_source":
-      return `${discipline}/evidence_sources`;
-    case "evaluation_setup":
-      return `${discipline}/evaluation_setups`;
-    case "measure":
-      return `${discipline}/measures`;
+    case "benchmark":
+      return `${discipline}/benchmarks`;
+    case "finding":
+      return `${discipline}/findings`;
+    case "formal_result":
+      return `${discipline}/formal_results`;
     case "claim":
       return `${discipline}/claims`;
     case "topic":
       return `${discipline}/topics`;
     case "synthesis":
       return `${discipline}/syntheses`;
-    case "overview":
-      return `${discipline}/overview`;
   }
 }
 
@@ -222,24 +275,104 @@ function renderPageBody(page: LiteratureWikiPage): string {
       pushBulletSection(lines, "Tensions", page.tensions);
       pushBulletSection(lines, "Notes", page.notes);
       return lines.join("\n");
-    case "author":
-    case "concept":
-    case "method":
-    case "task":
-    case "evidence_source":
-    case "evaluation_setup":
-    case "measure":
+    case "research_question":
+      lines.push(
+        "",
+        "## Question",
+        "",
+        page.question,
+        "",
+        "## Motivation",
+        "",
+        page.motivation,
+        "",
+        "## Current Answer",
+        "",
+        page.currentAnswer,
+      );
+      pushBulletSection(lines, "Related Topics", page.relatedTopicKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Claim Pages", page.claimPageKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Finding Pages", page.findingPageKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Method Pages", page.methodPageKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Benchmarks", page.benchmarkKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Open Subquestions", page.openSubquestions);
+      pushBulletSection(lines, "Related Pages", page.relatedPageKeys.map((key) => `[[${key}]]`));
+      return lines.join("\n");
+    case "benchmark":
+      lines.push(
+        "",
+        "## Benchmark Statement",
+        "",
+        page.benchmarkStatement,
+        "",
+        "## Dataset Or Suite",
+        "",
+        page.datasetOrSuite,
+      );
+      pushBulletSection(lines, "Evaluates", page.evaluates);
+      pushBulletSection(lines, "Metrics", page.metrics);
+      pushBulletSection(lines, "Known Caveats", page.knownCaveats);
+      pushBulletSection(lines, "Used By Papers", page.usedByPaperKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Related Methods", page.relatedMethodKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Related Findings", page.relatedFindingKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Related Pages", page.relatedPageKeys.map((key) => `[[${key}]]`));
+      return lines.join("\n");
+    case "finding":
+      lines.push(
+        "",
+        "## Finding Statement",
+        "",
+        page.findingStatement,
+        "",
+        "## Evidence Type",
+        "",
+        page.evidenceType,
+      );
+      pushBulletSection(lines, "Supporting Papers", page.supportingPaperKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Related Methods", page.relatedMethodKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Related Benchmarks", page.relatedBenchmarkKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Supports Claims", page.supportsClaimKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Qualifies Claims", page.qualifiesClaimKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Contradicts Claims", page.contradictsClaimKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Caveats", page.caveats);
+      pushBulletSection(lines, "Related Pages", page.relatedPageKeys.map((key) => `[[${key}]]`));
+      return lines.join("\n");
+    case "formal_result":
       lines.push(
         "",
         "## Statement",
         "",
         page.statement,
         "",
-        "## Rationale",
+        "## Proof Idea",
         "",
-        page.rationale,
+        page.proofIdea,
       );
-      pushBulletSection(lines, "Patch Outline", page.patchOutline);
+      lines.push("", "## Result Type", "", page.formalResultType);
+      pushBulletSection(lines, "Assumptions", page.assumptions);
+      pushBulletSection(lines, "Depends On Results", page.dependsOnResultKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Supports Claims", page.supportsClaimKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Related Methods", page.relatedMethodKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Limitations", page.limitations);
+      pushBulletSection(lines, "Related Pages", page.relatedPageKeys.map((key) => `[[${key}]]`));
+      return lines.join("\n");
+    case "method":
+      lines.push(
+        "",
+        "## Method Statement",
+        "",
+        page.methodStatement,
+      );
+      pushBulletSection(lines, "Mechanism", page.mechanism);
+      pushBulletSection(lines, "Assumptions", page.assumptions);
+      pushBulletSection(lines, "Inputs", page.inputs);
+      pushBulletSection(lines, "Outputs", page.outputs);
+      pushBulletSection(lines, "Variants", page.variants);
+      pushBulletSection(lines, "Baselines", page.baselines);
+      pushBulletSection(lines, "Failure Modes", page.failureModes);
+      pushBulletSection(lines, "Related Benchmarks", page.relatedBenchmarkKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Related Findings", page.relatedFindingKeys.map((key) => `[[${key}]]`));
+      pushBulletSection(lines, "Related Formal Results", page.relatedFormalResultKeys.map((key) => `[[${key}]]`));
       pushBulletSection(lines, "Related Pages", page.relatedPageKeys.map((key) => `[[${key}]]`));
       return lines.join("\n");
     case "topic":
@@ -278,21 +411,6 @@ function renderPageBody(page: LiteratureWikiPage): string {
       pushBulletSection(lines, "Tensions", page.tensions);
       pushBulletSection(lines, "Open Questions", page.openQuestions);
       return lines.join("\n");
-    case "overview":
-      lines.push(
-        "",
-        "## Executive Summary",
-        "",
-        page.executiveSummary,
-      );
-      pushBulletSection(lines, "Current Picture", page.currentPicture);
-      pushBulletSection(lines, "Key Tensions", page.keyTensions);
-      pushBulletSection(lines, "Major Themes", page.majorThemePageKeys.map((key) => `[[${key}]]`));
-      pushBulletSection(lines, "Syntheses", page.synthesisPageKeys.map((key) => `[[${key}]]`));
-      pushBulletSection(lines, "Key Claims", page.keyClaimPageKeys.map((key) => `[[${key}]]`));
-      pushBulletSection(lines, "Start Here", page.startHerePageKeys.map((key) => `[[${key}]]`));
-      pushBulletSection(lines, "Open Fronts", page.openFrontPageKeys.map((key) => `[[${key}]]`));
-      return lines.join("\n");
   }
 }
 
@@ -307,14 +425,46 @@ export function literatureWikiPageLinks(page: LiteratureWikiPage): string[] {
         ...page.qualifyPaperKeys,
         ...page.topicPageKeys,
       ];
-    case "author":
-    case "concept":
+    case "research_question":
+      return [
+        ...page.relatedTopicKeys,
+        ...page.claimPageKeys,
+        ...page.findingPageKeys,
+        ...page.methodPageKeys,
+        ...page.benchmarkKeys,
+        ...page.relatedPageKeys,
+      ];
+    case "benchmark":
+      return [
+        ...page.usedByPaperKeys,
+        ...page.relatedMethodKeys,
+        ...page.relatedFindingKeys,
+        ...page.relatedPageKeys,
+      ];
+    case "finding":
+      return [
+        ...page.supportingPaperKeys,
+        ...page.relatedMethodKeys,
+        ...page.relatedBenchmarkKeys,
+        ...page.supportsClaimKeys,
+        ...page.qualifiesClaimKeys,
+        ...page.contradictsClaimKeys,
+        ...page.relatedPageKeys,
+      ];
+    case "formal_result":
+      return [
+        ...page.dependsOnResultKeys,
+        ...page.supportsClaimKeys,
+        ...page.relatedMethodKeys,
+        ...page.relatedPageKeys,
+      ];
     case "method":
-    case "task":
-    case "evidence_source":
-    case "evaluation_setup":
-    case "measure":
-      return page.relatedPageKeys;
+      return [
+        ...page.relatedBenchmarkKeys,
+        ...page.relatedFindingKeys,
+        ...page.relatedFormalResultKeys,
+        ...page.relatedPageKeys,
+      ];
     case "topic":
       return [
         ...page.keyPageKeys,
@@ -324,14 +474,6 @@ export function literatureWikiPageLinks(page: LiteratureWikiPage): string[] {
       return [
         ...page.keyPageKeys,
         ...page.claimPageKeys,
-      ];
-    case "overview":
-      return [
-        ...page.openFrontPageKeys,
-        ...page.majorThemePageKeys,
-        ...page.synthesisPageKeys,
-        ...page.keyClaimPageKeys,
-        ...page.startHerePageKeys,
       ];
   }
 }
@@ -354,7 +496,7 @@ export function buildLiteratureWikiGraph(pages: LiteratureWikiPage[]): Literatur
   }
 
   const orphanPageKeys = pages
-    .filter((page) => page.kind !== "overview" && (inbound.get(page.pageKey)?.size ?? 0) === 0)
+    .filter((page) => (inbound.get(page.pageKey)?.size ?? 0) === 0)
     .map((page) => page.pageKey);
 
   return {
@@ -370,89 +512,27 @@ export function buildLiteratureWikiGraph(pages: LiteratureWikiPage[]): Literatur
   };
 }
 
-export function buildLiteratureWikiOverviewPage(
+export function buildLiteratureWikiLookupResult(
+  canonicalPaperKey: string,
   pages: LiteratureWikiPage[],
-  updatedAt = new Date().toISOString(),
-  options?: {
-    discipline?: LiteratureDiscipline;
-    pageKey?: string;
-    title?: string;
-    summary?: string;
-    aliases?: string[];
-  },
-): LiteratureWikiOverviewPage {
-  const paperPages = pages.filter((page): page is LiteratureWikiPaperPage => page.kind === "paper");
-  const claimPages = pages.filter((page): page is LiteratureWikiClaimPage => page.kind === "claim");
-  const topicPages = pages.filter((page): page is LiteratureWikiTopicPage => page.kind === "topic");
-  const synthesisPages = pages.filter((page): page is LiteratureWikiSynthesisPage => page.kind === "synthesis");
-  const openFrontPageKeys = topicPages
-    .filter((page) => page.openQuestions.length > 0)
-    .map((page) => page.pageKey);
-  const startHerePageKeys = dedupeStrings([
-    ...synthesisPages.slice(0, 3).map((page) => page.pageKey),
-    ...topicPages.slice(0, 3).map((page) => page.pageKey),
-    ...paperPages.slice(0, 2).map((page) => page.pageKey),
-  ]).slice(0, 6);
-  const majorThemePageKeys = topicPages
-    .slice()
-    .sort((left, right) => right.keyPageKeys.length - left.keyPageKeys.length)
-    .slice(0, 8)
-    .map((page) => page.pageKey);
-  const keyClaimPageKeys = claimPages
-    .slice()
-    .sort((left, right) => (
-      right.supportPaperKeys.length + right.contradictPaperKeys.length + right.qualifyPaperKeys.length
-    ) - (
-      left.supportPaperKeys.length + left.contradictPaperKeys.length + left.qualifyPaperKeys.length
-    ))
-    .slice(0, 8)
-    .map((page) => page.pageKey);
-  const activeClaimPages = claimPages.filter((page) => page.claimStatus === "active");
-  const contestedClaimPages = claimPages.filter((page) => page.claimStatus === "contested" || page.claimStatus === "needs_revisit");
-  const executiveSummary = synthesisPages.length > 0
-    ? `This wiki currently organizes ${paperPages.length} paper pages around ${topicPages.length} major topic pages and ${synthesisPages.length} active synthesis pages. The current big picture is already partially compiled into cross-source syntheses rather than living only in individual paper notes.`
-    : `This wiki currently organizes ${paperPages.length} paper pages around ${topicPages.length} major topic pages and ${claimPages.length} tracked claim pages. The big picture is emerging primarily through topic and claim updates, with room for more explicit synthesis pages as the literature base grows.`;
-  const currentPicture = dedupeStrings([
-    topicPages.length > 0
-      ? `The strongest organizing themes right now are ${topicPages.slice(0, 3).map((page) => `[[${page.pageKey}]]`).join(", ")}.`
-      : "",
-    activeClaimPages.length > 0
-      ? `There are ${activeClaimPages.length} active claim pages with direct supporting evidence from ingested papers.`
-      : "",
-    synthesisPages.length > 0
-      ? `Cross-source synthesis is currently concentrated in ${synthesisPages.slice(0, 3).map((page) => `[[${page.pageKey}]]`).join(", ")}.`
-      : "",
-  ]);
-  const keyTensions = dedupeStrings([
-    contestedClaimPages.length > 0
-      ? `The main tensions are concentrated in ${contestedClaimPages.slice(0, 4).map((page) => `[[${page.pageKey}]]`).join(", ")}.`
-      : "",
-    openFrontPageKeys.length > 0
-      ? `Open fronts remain most visible in ${openFrontPageKeys.slice(0, 4).map((page) => `[[${page}]]`).join(", ")}.`
-      : "",
-  ]);
+): LiteratureWikiPage[] {
+  const relatedPages: LiteratureWikiPage[] = [];
 
-  return {
-    schemaVersion: "kaivu-literature-wiki-page-v1",
-    discipline: options?.discipline ?? inferOverviewDiscipline(pages),
-    kind: "overview",
-    pageKey: options?.pageKey ?? "literature_overview",
-    title: options?.title ?? "Literature Overview",
-    summary: options?.summary ?? "Executive summary of the literature wiki: current picture, key tensions, major themes, and where to start reading.",
-    tags: ["overview", "literature", "wiki"],
-    aliases: options?.aliases ?? ["literature_index", "wiki_overview"],
-    sourcePaperKeys: dedupeStrings(pages.flatMap((page) => page.sourcePaperKeys)),
-    updatedAt,
-    domainScope: dedupeStrings(pages.flatMap((page) => page.domainScope)),
-    executiveSummary,
-    currentPicture,
-    keyTensions,
-    majorThemePageKeys,
-    synthesisPageKeys: synthesisPages.map((page) => page.pageKey),
-    keyClaimPageKeys,
-    startHerePageKeys,
-    openFrontPageKeys,
-  };
+  for (const page of pages) {
+    if (!page.sourcePaperKeys.includes(canonicalPaperKey)) continue;
+    relatedPages.push(page);
+  }
+
+  const sortedPages = relatedPages
+    .sort((left, right) => {
+      const byPaperKind = Number(right.kind === "paper") - Number(left.kind === "paper");
+      if (byPaperKind !== 0) return byPaperKind;
+      const byKind = left.kind.localeCompare(right.kind);
+      if (byKind !== 0) return byKind;
+      return left.title.localeCompare(right.title);
+    });
+
+  return sortedPages;
 }
 
 export function parseLiteratureWikiPageMarkdown(raw: string): LiteratureWikiPage | null {
@@ -519,20 +599,80 @@ export function parseLiteratureWikiPageMarkdown(raw: string): LiteratureWikiPage
         tensions: readBullets(sections["Tensions"]),
         notes: readBullets(sections["Notes"]),
       };
-    case "author":
-    case "concept":
-    case "method":
-    case "task":
-    case "evidence_source":
-    case "evaluation_setup":
-    case "measure":
+    case "research_question":
+      return {
+        ...base,
+        kind,
+        question: readParagraph(sections["Question"]),
+        motivation: readParagraph(sections["Motivation"]),
+        currentAnswer: readParagraph(sections["Current Answer"]),
+        relatedTopicKeys: readWikiBullets(sections["Related Topics"]),
+        claimPageKeys: readWikiBullets(sections["Claim Pages"]),
+        findingPageKeys: readWikiBullets(sections["Finding Pages"]),
+        methodPageKeys: readWikiBullets(sections["Method Pages"]),
+        benchmarkKeys: readWikiBullets(sections["Benchmarks"]),
+        openSubquestions: readBullets(sections["Open Subquestions"]),
+        relatedPageKeys: readWikiBullets(sections["Related Pages"]),
+      };
+    case "benchmark":
+      return {
+        ...base,
+        kind,
+        benchmarkStatement: readParagraph(sections["Benchmark Statement"]),
+        evaluates: readBullets(sections["Evaluates"]),
+        datasetOrSuite: readParagraph(sections["Dataset Or Suite"]),
+        metrics: readBullets(sections["Metrics"]),
+        knownCaveats: readBullets(sections["Known Caveats"]),
+        usedByPaperKeys: readWikiBullets(sections["Used By Papers"]),
+        relatedMethodKeys: readWikiBullets(sections["Related Methods"]),
+        relatedFindingKeys: readWikiBullets(sections["Related Findings"]),
+        relatedPageKeys: readWikiBullets(sections["Related Pages"]),
+      };
+    case "finding":
+      return {
+        ...base,
+        kind,
+        findingStatement: readParagraph(sections["Finding Statement"]),
+        evidenceType: readParagraph(sections["Evidence Type"]),
+        supportingPaperKeys: readWikiBullets(sections["Supporting Papers"]),
+        relatedMethodKeys: readWikiBullets(sections["Related Methods"]),
+        relatedBenchmarkKeys: readWikiBullets(sections["Related Benchmarks"]),
+        supportsClaimKeys: readWikiBullets(sections["Supports Claims"]),
+        qualifiesClaimKeys: readWikiBullets(sections["Qualifies Claims"]),
+        contradictsClaimKeys: readWikiBullets(sections["Contradicts Claims"]),
+        caveats: readBullets(sections["Caveats"]),
+        relatedPageKeys: readWikiBullets(sections["Related Pages"]),
+      };
+    case "formal_result":
       return {
         ...base,
         kind,
         statement: readParagraph(sections["Statement"]),
-        rationale: readParagraph(sections["Rationale"]),
+        formalResultType: normalizeFormalResultType(readParagraph(sections["Result Type"])),
+        assumptions: readBullets(sections["Assumptions"]),
+        proofIdea: readParagraph(sections["Proof Idea"]),
+        dependsOnResultKeys: readWikiBullets(sections["Depends On Results"]),
+        supportsClaimKeys: readWikiBullets(sections["Supports Claims"]),
+        relatedMethodKeys: readWikiBullets(sections["Related Methods"]),
+        limitations: readBullets(sections["Limitations"]),
         relatedPageKeys: readWikiBullets(sections["Related Pages"]),
-        patchOutline: readBullets(sections["Patch Outline"]),
+      };
+    case "method":
+      return {
+        ...base,
+        kind,
+        methodStatement: readParagraph(sections["Method Statement"]),
+        mechanism: readBullets(sections["Mechanism"]),
+        assumptions: readBullets(sections["Assumptions"]),
+        inputs: readBullets(sections["Inputs"]),
+        outputs: readBullets(sections["Outputs"]),
+        variants: readBullets(sections["Variants"]),
+        baselines: readBullets(sections["Baselines"]),
+        failureModes: readBullets(sections["Failure Modes"]),
+        relatedBenchmarkKeys: readWikiBullets(sections["Related Benchmarks"]),
+        relatedFindingKeys: readWikiBullets(sections["Related Findings"]),
+        relatedFormalResultKeys: readWikiBullets(sections["Related Formal Results"]),
+        relatedPageKeys: readWikiBullets(sections["Related Pages"]),
       };
     case "topic":
       return {
@@ -560,19 +700,6 @@ export function parseLiteratureWikiPageMarkdown(raw: string): LiteratureWikiPage
         contradictions: readBullets(sections["Contradictions"]),
         tensions: readBullets(sections["Tensions"]),
         openQuestions: readBullets(sections["Open Questions"]),
-      };
-    case "overview":
-      return {
-        ...base,
-        kind,
-        executiveSummary: readParagraph(sections["Executive Summary"]),
-        currentPicture: readBullets(sections["Current Picture"]),
-        keyTensions: readBullets(sections["Key Tensions"]),
-        majorThemePageKeys: readWikiBullets(sections["Major Themes"]),
-        synthesisPageKeys: readWikiBullets(sections["Syntheses"]),
-        keyClaimPageKeys: readWikiBullets(sections["Key Claims"]),
-        startHerePageKeys: readWikiBullets(sections["Start Here"]),
-        openFrontPageKeys: readWikiBullets(sections["Open Fronts"]),
       };
   }
 }
@@ -661,6 +788,43 @@ function extractWikiLinks(text: string): string[] {
   return dedupeStrings([...text.matchAll(/\[\[([^\]]+)\]\]/gu)].map((match) => (match[1] ?? "").trim()).filter(Boolean));
 }
 
+async function readLiteratureWikiPage(path: string): Promise<LiteratureWikiPage | null> {
+  try {
+    const raw = await readFile(path, "utf-8");
+    return parseLiteratureWikiPageMarkdown(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function loadLiteratureWikiPages(root: string): Promise<LiteratureWikiPage[]> {
+  const files = await collectLiteratureWikiMarkdownFiles(root);
+  const pages: LiteratureWikiPage[] = [];
+  for (const file of files) {
+    const page = await readLiteratureWikiPage(file);
+    if (page) pages.push(page);
+  }
+  return pages;
+}
+
+async function collectLiteratureWikiMarkdownFiles(root: string): Promise<string[]> {
+  try {
+    const entries = await readdir(root, { withFileTypes: true });
+    const files: string[] = [];
+    for (const entry of entries) {
+      const path = join(root, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...await collectLiteratureWikiMarkdownFiles(path));
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+        files.push(path);
+      }
+    }
+    return files;
+  } catch {
+    return [];
+  }
+}
+
 function dedupeStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
@@ -677,17 +841,14 @@ function normalizePageKind(value: unknown): SupportedLiteratureWikiPageKind | nu
   const text = asString(value);
   return [
     "paper",
-    "author",
-    "concept",
+    "research_question",
     "method",
-    "task",
-    "evidence_source",
-    "evaluation_setup",
-    "measure",
+    "benchmark",
+    "finding",
+    "formal_result",
     "claim",
     "topic",
     "synthesis",
-    "overview",
   ].includes(text) ? text as SupportedLiteratureWikiPageKind : null;
 }
 
@@ -714,6 +875,20 @@ function normalizeClaimStatus(value: unknown): LiteratureWikiClaimPage["claimSta
   ].includes(text) ? text as LiteratureWikiClaimPage["claimStatus"] : "provisional";
 }
 
+function normalizeFormalResultType(value: unknown): LiteratureWikiFormalResultPage["formalResultType"] {
+  const text = asString(value);
+  return [
+    "theorem",
+    "lemma",
+    "corollary",
+    "proposition",
+    "conjecture",
+    "bound",
+    "guarantee",
+    "other",
+  ].includes(text) ? text as LiteratureWikiFormalResultPage["formalResultType"] : "other";
+}
+
 function normalizeDiscipline(value: unknown): LiteratureDiscipline {
   const text = asString(value);
   return [
@@ -725,11 +900,4 @@ function normalizeDiscipline(value: unknown): LiteratureDiscipline {
     "general_science",
     "unknown",
   ].includes(text) ? text as LiteratureDiscipline : "unknown";
-}
-
-function inferOverviewDiscipline(pages: LiteratureWikiPage[]): LiteratureDiscipline {
-  const disciplines = dedupeStrings(pages.map((page) => page.discipline).filter((value) => value !== "unknown"));
-  if (disciplines.length === 1) return normalizeDiscipline(disciplines[0]);
-  if (disciplines.length > 1) return "general_science";
-  return "unknown";
 }

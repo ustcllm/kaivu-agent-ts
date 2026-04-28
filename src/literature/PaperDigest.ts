@@ -428,16 +428,8 @@ export interface PaperDigestManifestEntry {
 
 export interface PaperDigestManifestRecord {
   canonicalPaperKey: string;
-  cacheKey: string;
-  canonicalLookupKey: string;
   sourceId: string;
   sourceKind: PaperDigestSourceKind;
-  title: string;
-  discipline: LiteratureDiscipline;
-  schemaFamily: PaperDigestSchemaFamily;
-  doi?: string | null;
-  arxivId?: string | null;
-  contentLevel: PaperDigestContentLevel;
   digestFile: string;
   updatedAt: string;
 }
@@ -747,16 +739,8 @@ export class PaperDigests {
         .filter(isRecord)
         .map((record) => ({
           canonicalPaperKey: asString(record.canonicalPaperKey),
-          cacheKey: asString(record.cacheKey),
-          canonicalLookupKey: asString(record.canonicalLookupKey),
           sourceId: asString(record.sourceId),
           sourceKind: normalizePaperDigestSourceKind(record.sourceKind),
-          title: asString(record.title),
-          discipline: normalizeLiteratureDiscipline(record.discipline),
-          schemaFamily: normalizePaperDigestSchemaFamily(record.schemaFamily),
-          doi: nullableString(record.doi),
-          arxivId: nullableString(record.arxivId),
-          contentLevel: normalizePaperDigestContentLevel(record.contentLevel),
           digestFile: asString(record.digestFile),
           updatedAt: asString(record.updatedAt),
         }));
@@ -1412,16 +1396,8 @@ function clonePaperDigestInput(input: PaperDigestInput): PaperDigestInput {
 function buildPaperDigestManifestRecord(entry: PaperDigestManifestEntry): PaperDigestManifestRecord {
   return {
     canonicalPaperKey: entry.digest.canonicalPaperKey,
-    cacheKey: paperDigestCacheKey(entry.input),
-    canonicalLookupKey: paperCanonicalLookupKey(entry.input),
     sourceId: entry.digest.sourceId,
     sourceKind: entry.digest.sourceKind,
-    title: entry.digest.title,
-    discipline: entry.digest.discipline,
-    schemaFamily: entry.digest.schemaFamily,
-    doi: entry.digest.doi ?? null,
-    arxivId: entry.digest.arxivId ?? null,
-    contentLevel: entry.digest.contentLevel,
     digestFile: `${safeFileStem(entry.digest.canonicalPaperKey)}.json`,
     updatedAt: entry.digest.createdAt,
   };

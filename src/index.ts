@@ -48,15 +48,17 @@ export {
   renderLiteratureLintPrompt,
 } from "./literature/LiteratureLint.js";
 export type * from "./literature/LiteratureLint.js";
-export { NaiveWikiSearch } from "./literature/WikiSearch.js";
-export type * from "./literature/WikiSearch.js";
-export { WikiRetrieve } from "./literature/WikiRetrieve.js";
-export type * from "./literature/WikiRetrieve.js";
+export { WikiRetrieve } from "./literature/WikiRetrieval.js";
+export type * from "./literature/WikiRetrieval.js";
+export { WikiQuery, WIKI_QUERY_MODEL_OUTPUT_SHAPE, renderWikiQueryPrompt } from "./literature/WikiQuery.js";
+export type * from "./literature/WikiQuery.js";
 export { PaperIngest } from "./literature/PaperIngest.js";
 export type * from "./literature/PaperIngest.js";
 export type * from "./agent/specialists/literature/PaperSource.js";
 export {
+  PAPER_INGEST_BATCH_SUMMARY_MODEL_OUTPUT_SHAPE,
   PAPER_INGEST_PLAN_MODEL_OUTPUT_SHAPE,
+  renderLiteratureWikiIndex,
   renderPaperIngestPlanPrompt,
 } from "./literature/PaperIngest.js";
 export {

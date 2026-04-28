@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Ingest"
+  short_description: "Plan and materialize one paper into the literature wiki"
+  default_prompt: "Ingest this paper digest into the wiki using existing wiki context."

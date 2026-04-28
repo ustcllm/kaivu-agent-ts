@@ -41,6 +41,7 @@ export class SciRuntime {
     private readonly tools: ToolRegistry,
     private readonly literature?: LiteratureReviewRuntimeStore,
     private readonly paperDigests?: PaperDigests,
+    private readonly literatureWikiRoot?: string,
     private readonly capabilities = new ScientificCapabilityRegistry(),
     private readonly modelRegistry?: ModelRegistry,
     private readonly graph?: ResearchGraphRegistry,
@@ -122,6 +123,7 @@ export class SciRuntime {
       renderedContext: contextPack.renderPromptContext(Math.floor(contextPack.policy.budget.targetTokens * 4)),
       literature: this.literature,
       paperDigests: this.paperDigests,
+      literatureWikiRoot: this.literatureWikiRoot,
       model,
       tools: this.tools,
       onProgress: (progress) => {

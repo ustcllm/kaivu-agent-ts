@@ -1,0 +1,4 @@
+interface:
+  display_name: "Literature Review"
+  short_description: "Frame, search, and shortlist papers"
+  default_prompt: "Plan a literature review, search for relevant papers, and return a ranked shortlist."

@@ -16,6 +16,7 @@ export interface SpecialistRunInput {
   renderedContext?: string;
   literature?: LiteratureReviewRuntimeStore;
   paperDigests?: PaperDigests;
+  literatureWikiRoot?: string;
   model: ModelProvider;
   tools: ToolRegistry;
   onModelPrompt?: (prompt: { specialistId: string; system: string; user: string }) => void;

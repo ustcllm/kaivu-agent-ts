@@ -22,7 +22,6 @@ export type LiteratureLintIssueKind =
   | "topic_without_claims"
   | "paper_without_links"
   | "duplicate_title"
-  | "overview_missing"
   | "stale_claim"
   | "contradiction"
   | "missing_cross_reference"
@@ -92,7 +91,7 @@ export const LITERATURE_LINT_MODEL_OUTPUT_SHAPE = {
   issues: [
     {
       kind:
-    "stale_claim | contradiction | missing_cross_reference | gap_fillable_by_search | missing_page_candidate | overview_missing",
+    "stale_claim | contradiction | missing_cross_reference | gap_fillable_by_search | missing_page_candidate",
       severity: "low | medium | high",
       pageKeys: ["string"],
       rationale: "string",
@@ -156,7 +155,7 @@ export function renderLiteratureLintPrompt(input: { pages: LiteratureWikiLintPag
     "- contradictions between pages",
     "- stale claims that may have been superseded or should be revisited",
     "- important missing cross-references",
-    "- important concepts or entities mentioned across the wiki but lacking their own page",
+    "- important research questions, methods, benchmarks, findings, or formal results mentioned across the wiki but lacking their own page",
     "- gaps that could be filled by additional scholarly search or source ingestion",
     "",
     "Do not report structural issues such as orphan pages or broken references unless they clearly create a semantic knowledge problem. Structural lint is handled separately.",
@@ -238,7 +237,7 @@ export class LiteratureLint {
           pageKeys: [page.pageKey],
           rationale: `Page ${page.pageKey} has no inbound links, so it is likely disconnected from the usable wiki graph.`,
           suggestedActions: [
-            `Add links to ${page.pageKey} from at least one related paper, topic, concept, or claim page.`,
+            `Add links to ${page.pageKey} from at least one related paper, topic, method, benchmark, finding, or claim page.`,
           ],
         });
       }
@@ -282,36 +281,12 @@ export class LiteratureLint {
           kind: "paper_without_links",
           severity: "medium",
           pageKeys: [page.pageKey],
-          rationale: `Paper page ${page.pageKey} has no outbound links to concepts, methods, topics, claims, or related papers.`,
+          rationale: `Paper page ${page.pageKey} has no outbound links to research questions, methods, benchmarks, findings, topics, claims, or related papers.`,
           suggestedActions: [
             `Add high-value cross-references from ${page.pageKey} to the pages it should update or support.`,
           ],
         });
       }
-    }
-
-    if (!pages.some((page) => page.kind === "overview")) {
-      issues.push({
-        kind: "overview_missing",
-        severity: "medium",
-        pageKeys: [],
-        rationale: "The literature wiki has no overview page that orients the reader to its major themes, syntheses, and key claims.",
-        suggestedActions: [
-          "Generate or refresh the overview page as a top-level content entry point.",
-        ],
-      });
-    }
-
-    if (!pages.some((page) => page.pageKey === "literature_overview")) {
-      issues.push({
-        kind: "overview_missing",
-        severity: "medium",
-        pageKeys: [],
-        rationale: "The literature wiki is missing its canonical overview page key, so the main entry point may not be stable across maintenance passes.",
-        suggestedActions: [
-          "Ensure the overview page exists with the canonical page key `literature_overview`.",
-        ],
-      });
     }
 
     if (wikiRoot) {
@@ -598,7 +573,6 @@ function normalizeIssueKind(value: string): LiteratureLintIssueKind {
     "topic_without_claims",
     "paper_without_links",
     "duplicate_title",
-    "overview_missing",
     "stale_claim",
     "contradiction",
     "missing_cross_reference",
@@ -615,17 +589,14 @@ function normalizePageKind(value: unknown): SupportedLiteratureWikiPageKind | nu
   const text = asString(value);
   return [
     "paper",
-    "author",
-    "concept",
+    "research_question",
     "method",
-    "task",
-    "evidence_source",
-    "evaluation_setup",
-    "measure",
+    "benchmark",
+    "finding",
+    "formal_result",
     "claim",
     "topic",
     "synthesis",
-    "overview",
   ].includes(text) ? text as SupportedLiteratureWikiPageKind : null;
 }
 
@@ -746,33 +717,80 @@ function parseWikiLintPageToGraphPage(page: LiteratureWikiLintPage): LiteratureW
           tensions: [],
           openQuestions: [],
         };
-      case "overview":
-        return {
-          ...base,
-          kind: page.kind,
-          executiveSummary: page.summary,
-          currentPicture: [],
-          keyTensions: [],
-          majorThemePageKeys: [],
-          synthesisPageKeys: [],
-          keyClaimPageKeys: [],
-          startHerePageKeys: [],
-          openFrontPageKeys: [],
-        };
-    case "author":
-    case "concept":
-    case "method":
-    case "task":
-    case "evidence_source":
-    case "evaluation_setup":
-    case "measure":
+    case "research_question":
       return {
         ...base,
         kind: page.kind,
-        statement: page.summary,
-        rationale: page.summary,
+        question: page.summary,
+        motivation: page.summary,
+        currentAnswer: page.summary,
+        relatedTopicKeys: [],
+        claimPageKeys: [],
+        findingPageKeys: [],
+        methodPageKeys: [],
+        benchmarkKeys: [],
+        openSubquestions: [],
         relatedPageKeys: page.linksTo,
-        patchOutline: [],
+      };
+    case "benchmark":
+      return {
+        ...base,
+        kind: page.kind,
+        benchmarkStatement: page.summary,
+        evaluates: [],
+        datasetOrSuite: "",
+        metrics: [],
+        knownCaveats: [],
+        usedByPaperKeys: [],
+        relatedMethodKeys: [],
+        relatedFindingKeys: [],
+        relatedPageKeys: page.linksTo,
+      };
+    case "finding":
+      return {
+        ...base,
+        kind: page.kind,
+        findingStatement: page.summary,
+        evidenceType: "",
+        supportingPaperKeys: [],
+        relatedMethodKeys: [],
+        relatedBenchmarkKeys: [],
+        supportsClaimKeys: [],
+        qualifiesClaimKeys: [],
+        contradictsClaimKeys: [],
+        caveats: [],
+        relatedPageKeys: page.linksTo,
+      };
+    case "formal_result":
+      return {
+        ...base,
+        kind: page.kind,
+        formalResultType: "other",
+        statement: page.summary,
+        assumptions: [],
+        proofIdea: "",
+        dependsOnResultKeys: [],
+        supportsClaimKeys: [],
+        relatedMethodKeys: [],
+        limitations: [],
+        relatedPageKeys: page.linksTo,
+      };
+    case "method":
+      return {
+        ...base,
+        kind: page.kind,
+        methodStatement: page.summary,
+        mechanism: [],
+        assumptions: [],
+        inputs: [],
+        outputs: [],
+        variants: [],
+        baselines: [],
+        failureModes: [],
+        relatedBenchmarkKeys: [],
+        relatedFindingKeys: [],
+        relatedFormalResultKeys: [],
+        relatedPageKeys: page.linksTo,
       };
   }
 }

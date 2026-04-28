@@ -1,37 +1,50 @@
 import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import {
   parseStructuredOutput,
   repairInstruction,
   salvageStructuredOutput,
   type StructuredSchema,
 } from "../structured/StructuredOutput.js";
-import type { LiteratureDiscipline, PaperDigest, PaperDigestSchemaFamily } from "./PaperDigest.js";
 import {
-  buildLiteratureWikiOverviewPage,
+  PaperDigests,
+  type LiteratureDiscipline,
+  type PaperDigest,
+  type PaperDigestCapabilities,
+  type PaperDigestInput,
+  type PaperDigestPdfFileInput,
+  type PaperDigestPdfUrlInput,
+  type PaperDigestResult,
+  type PaperDigestSchemaFamily,
+} from "./PaperDigest.js";
+import {
+  buildLiteratureWikiLookupResult,
+  literatureWikiPageLinks,
   literatureWikiPageDirectory,
   literatureWikiPagePath,
   parseLiteratureWikiPageMarkdown,
   renderLiteratureWikiPageMarkdown,
+  type LiteratureWikiBenchmarkPage,
   type LiteratureWikiClaimPage,
-  type LiteratureWikiEntityPage,
-  type LiteratureWikiOverviewPage,
+  type LiteratureWikiFindingPage,
+  type LiteratureWikiFormalResultPage,
+  type LiteratureWikiLookupIndex,
+  type LiteratureWikiMethodPage,
   type LiteratureWikiPage,
   type LiteratureWikiPaperPage,
+  type LiteratureWikiResearchQuestionPage,
   type LiteratureWikiSynthesisPage,
   type LiteratureWikiTopicPage,
 } from "./LiteratureWikiPage.js";
-import { WikiRetrieve, type WikiRetrieveMode, type WikiRetrievePage } from "./WikiRetrieve.js";
+import { WikiRetrieve, type WikiRetrieveMode, type WikiRetrievePage } from "./WikiRetrieval.js";
 
 export type PaperIngestWikiPageKind =
   | "paper"
-  | "author"
-  | "concept"
+  | "research_question"
   | "method"
-  | "task"
-  | "evidence_source"
-  | "evaluation_setup"
-  | "measure"
+  | "benchmark"
+  | "finding"
+  | "formal_result"
   | "claim"
   | "topic"
   | "synthesis";
@@ -65,19 +78,21 @@ export interface PaperIngestTopicUpdate {
   topicThreads: string[];
 }
 
-export interface PaperIngestAuthorUpdate {
-  authorKey: string;
-  authorName: string;
-  action: "create" | "update";
-  rationale: string;
-  updates: string[];
-}
-
 export interface PaperIngestLogEntry {
   title: string;
   summary: string;
   affectedPageKeys: string[];
   notes: string[];
+}
+
+export interface PaperIngestExistingPageHint {
+  pageKind: PaperIngestWikiPageKind;
+  pageKey: string;
+  title: string;
+  summary?: string;
+  sourcePaperKeys?: string[];
+  relatedPageKeys?: string[];
+  keyFacts?: string[];
 }
 
 export interface PaperIngestPlan {
@@ -89,7 +104,6 @@ export interface PaperIngestPlan {
   pageUpdates: PaperIngestPageUpdate[];
   claimUpdates: PaperIngestClaimUpdate[];
   topicUpdates: PaperIngestTopicUpdate[];
-  authorUpdates: PaperIngestAuthorUpdate[];
   logEntry: PaperIngestLogEntry;
 }
 
@@ -103,7 +117,7 @@ export const PAPER_INGEST_PLAN_MODEL_OUTPUT_SHAPE = {
   summary: "string",
   pageUpdates: [
     {
-      pageKind: "paper | author | concept | method | task | evidence_source | evaluation_setup | measure | claim | topic | synthesis",
+      pageKind: "paper | research_question | method | benchmark | finding | formal_result | claim | topic | synthesis",
       pageKey: "string",
       title: "string",
       action: "create | update | append",
@@ -131,15 +145,6 @@ export const PAPER_INGEST_PLAN_MODEL_OUTPUT_SHAPE = {
       topicThreads: ["string"],
     },
   ],
-  authorUpdates: [
-    {
-      authorKey: "string",
-      authorName: "string",
-      action: "create | update",
-      rationale: "string",
-      updates: ["string"],
-    },
-  ],
   logEntry: {
     title: "string",
     summary: "string",
@@ -150,7 +155,7 @@ export const PAPER_INGEST_PLAN_MODEL_OUTPUT_SHAPE = {
 
 export function renderPaperIngestPlanPrompt(input: {
   digest: PaperDigest;
-  existingPageHints?: Array<{ pageKind: PaperIngestWikiPageKind; pageKey: string; title: string }>;
+  existingPageHints?: PaperIngestExistingPageHint[];
 }): string {
   const existingPageHints = renderExistingPageHints(input.existingPageHints ?? []);
 
@@ -165,25 +170,35 @@ export function renderPaperIngestPlanPrompt(input: {
     "Use the digest to decide how the paper should change the compiled knowledge base.",
     "",
     "Wiki modeling guidance:",
-    "- page kinds are cross-disciplinary and may include paper, author, concept, method, task, evidence_source, evaluation_setup, measure, claim, topic, and synthesis",
+    "- page kinds are cross-disciplinary and may include paper, research_question, method, benchmark, finding, formal_result, claim, topic, and synthesis",
     "- create or update a paper page for this source",
-    "- update concepts, methods, tasks, evidence sources, evaluation setups, measures, claims, and topics only when the digest clearly supports doing so",
+    "- update research questions, methods, benchmarks, findings, formal results, claims, and topics only when the digest clearly supports doing so",
     "- claim pages should capture support, contradiction, qualification, or organization of existing debates",
     "- topic pages should organize the problem area, scope, active threads, and open questions for that topic",
-    "- synthesis pages should capture cross-source comparisons, evolving judgments, or broader integrated takeaways",
+    "- synthesis pages should capture durable cross-page comparisons, reusable analyses, or higher-order takeaways that do not belong naturally to one topic or one claim",
     "- log.md is maintained separately as the global chronological record; do not plan separate log pages",
-    "- author pages should be updated only when the paper materially changes the author's visible profile in the wiki",
     "- do not invent pages that the digest does not justify",
     "",
     "Claim / topic / synthesis disambiguation:",
     "- claim: use this when the update is a proposition, judgment, or debate position that can be supported, contradicted, or qualified by papers",
     "- topic: use this when the update is about organizing an area of inquiry, its scope, recurring subthreads, and open questions",
-    "- synthesis: use this when the update integrates multiple papers, compares approaches, summarizes a debate state, or records a higher-order takeaway worth maintaining over time",
+    "- research_question: use this for an explicit question the literature is trying to answer",
+    "- benchmark: use this for datasets, benchmark suites, challenge sets, or standardized evaluation resources",
+    "- finding: use this for empirical, observational, or reported scientific findings grounded in evidence",
+    "- formal_result: use this for theorems, lemmas, corollaries, propositions, bounds, guarantees, or conjectures",
+    "- synthesis: use this only when the update creates a durable view across multiple topics, claims, methods, or evaluation frames",
     "- do not create a claim page for a generic theme label",
-    "- do not use a topic page as a substitute for a synthesis page",
-    "- do not create a synthesis page merely because a topic exists; create one only when the digest justifies a real integrated view",
+    "- do not create a synthesis page for a topic's normal current picture; update the topic page instead",
+    "- do not create a synthesis page for a claim's support, contradiction, qualification, or evidence list; update the claim page instead",
+    "- do not create a synthesis page merely because multiple papers touch the same topic",
     "- if the paper only adds one more example or detail to an existing topic, prefer updating the topic page over creating a new synthesis page",
-    "- if the paper materially changes the state of an existing debate, prefer updating or creating claim pages and, when needed, one synthesis page that explains the new integrated picture",
+    "- if the paper materially changes the state of an existing debate, prefer updating or creating claim pages unless the durable insight spans multiple claims or topics",
+    "",
+    "Existing page context guidance:",
+    "- prefer reusing an existing pageKey when the paper updates, supports, qualifies, contradicts, or extends that existing page",
+    "- use the existing page summary, source papers, related pages, and key facts to decide whether the new paper should create a new page or update an old one",
+    "- if an existing claim is already contested or qualified, choose the effect that reflects how this paper changes that debate",
+    "- if an existing topic, method, benchmark, finding, formal result, or research question already covers the same object, update that page instead of creating a near-duplicate",
     "",
     "Prioritization guidance:",
     "- every plan should include one primary paper page update",
@@ -191,7 +206,7 @@ export function renderPaperIngestPlanPrompt(input: {
     "- a single paper commonly affects around 5 to 15 pages, but prefer precision over page count",
     "",
     "Output requirements:",
-    "- pageKey, claimKey, topicKey, and authorKey should be stable slug-like identifiers",
+    "- pageKey, claimKey, and topicKey should be stable slug-like identifiers",
     "- rationale should explain why the page should change",
     "- patchOutline should describe what should be added, revised, linked, or re-framed on that page",
     "- for synthesis pages, patchOutline should read like a compact integrated view: lead with the main takeaway, then the current state of play, then the most important comparison points or tensions",
@@ -217,7 +232,7 @@ export function renderPaperIngestPlanPrompt(input: {
 }
 
 function renderExistingPageHints(
-  hints: Array<{ pageKind: PaperIngestWikiPageKind; pageKey: string; title: string }>,
+  hints: PaperIngestExistingPageHint[],
 ): string {
   if (hints.length === 0) return "No existing page hints were provided.";
 
@@ -226,13 +241,11 @@ function renderExistingPageHints(
     "topic",
     "synthesis",
     "paper",
-    "concept",
+    "research_question",
     "method",
-    "task",
-    "author",
-    "evidence_source",
-    "evaluation_setup",
-    "measure",
+    "benchmark",
+    "finding",
+    "formal_result",
   ];
 
   const lines: string[] = [];
@@ -243,7 +256,17 @@ function renderExistingPageHints(
     if (group.length === 0) continue;
     lines.push(`## ${kindLabelFromIngestPageKind(kind)}`, "");
     for (const item of group) {
-      lines.push(`- ${item.pageKey} (${item.title})`);
+      lines.push(`- [[${item.pageKey}]] (${item.title})`);
+      if (item.summary) lines.push(`  - summary: ${item.summary}`);
+      if (item.sourcePaperKeys && item.sourcePaperKeys.length > 0) {
+        lines.push(`  - source papers: ${item.sourcePaperKeys.slice(0, 8).map((key) => `[[${key}]]`).join(", ")}`);
+      }
+      if (item.relatedPageKeys && item.relatedPageKeys.length > 0) {
+        lines.push(`  - related pages: ${item.relatedPageKeys.slice(0, 10).map((key) => `[[${key}]]`).join(", ")}`);
+      }
+      for (const fact of item.keyFacts?.slice(0, 8) ?? []) {
+        lines.push(`  - ${fact}`);
+      }
     }
     lines.push("");
   }
@@ -251,15 +274,24 @@ function renderExistingPageHints(
   return lines.join("\n").trim();
 }
 
-export interface PaperIngestPlanRequest {
+interface PaperIngestPlanRequest {
   digest: PaperDigest;
   discipline?: LiteratureDiscipline;
   wikiRoot?: string;
-  existingPageHints?: Array<{ pageKind: PaperIngestWikiPageKind; pageKey: string; title: string }>;
+  existingPageHints?: PaperIngestExistingPageHint[];
 }
 
-export interface PaperIngestRequest extends PaperIngestPlanRequest {
+export interface PaperIngestPdfUrlInput extends PaperDigestPdfUrlInput {}
+
+export interface PaperIngestPdfFileInput extends PaperDigestPdfFileInput {}
+
+export type PaperIngestInput = PaperIngestPdfUrlInput | PaperIngestPdfFileInput;
+
+export interface PaperIngestRequest {
+  paper: PaperIngestInput;
   wikiRoot: string;
+  discipline?: LiteratureDiscipline;
+  existingPageHints?: PaperIngestExistingPageHint[];
 }
 
 export interface PaperIngestPlannerModelStepOptions {
@@ -268,6 +300,7 @@ export interface PaperIngestPlannerModelStepOptions {
   prompt: string;
   includeRenderedContext?: boolean;
   stream?: boolean;
+  attachments?: Array<{ kind: "pdf_url" | "pdf_file"; url?: string; path?: string; filename?: string; mediaType?: "application/pdf" }>;
   stageUserInputPolicy?: string | string[] | false;
 }
 
@@ -278,15 +311,33 @@ export type PaperIngestPlannerModelStepRunner = (
 export interface PaperIngestMaterializationResult {
   pages: LiteratureWikiPage[];
   skippedUpdates: Array<{ pageKind: string; pageKey: string; title: string; reason: string }>;
-  overviewPage?: LiteratureWikiOverviewPage;
 }
 
-export interface PaperIngestWriteResult extends PaperIngestMaterializationResult {
+export interface PaperIngestWriteStatus {
+  status: "written" | "reused_existing";
   writtenFiles: string[];
+  skippedUpdates: Array<{ pageKind: string; pageKey: string; title: string; reason: string }>;
   indexPath?: string;
   logPath?: string;
   hotPath?: string;
   disciplineHotPaths?: string[];
+}
+
+interface PaperIngestManifestRecord {
+  canonicalPaperKey: string;
+  pageFiles: string[];
+  updatedAt: string;
+}
+
+interface PersistedPaperIngestManifestFile {
+  schemaVersion: 1;
+  updatedAt: string;
+  records: PaperIngestManifestRecord[];
+}
+
+export interface PaperIngestWriteResult {
+  lookup: LiteratureWikiPage[];
+  write: PaperIngestWriteStatus;
 }
 
 export interface PreparedPaperIngest extends PaperIngestMaterializationResult {
@@ -301,28 +352,99 @@ export interface BatchCrossReferenceResult {
 }
 
 export interface PaperIngestBatchResult {
+  digests: PaperDigest[];
   completed: PreparedPaperIngest[];
-  failures: Array<{ digest: PaperDigest; error: string }>;
-  writtenFiles: string[];
-  indexPath?: string;
-  logPath?: string;
-  hotPath?: string;
-  disciplineHotPaths?: string[];
-  overviewPage?: LiteratureWikiOverviewPage;
-  pages: LiteratureWikiPage[];
-  skippedUpdates: Array<{ pageKind: string; pageKey: string; title: string; reason: string }>;
+  failures: Array<{
+    paper: PaperIngestInput;
+    digest?: PaperDigest;
+    error: string;
+    digestFailure?: Extract<PaperDigestResult, { status: "failed" }>;
+  }>;
+  lookupIndex: LiteratureWikiLookupIndex;
+  crossReference: BatchCrossReferenceResult;
+  write: PaperIngestWriteStatus;
 }
+
+export interface PaperIngestBatchPaperSummary {
+  canonicalPaperKey: string;
+  title: string;
+  status: "ingested" | "reused_existing";
+  summary: string;
+  affectedPageKeys: string[];
+}
+
+export interface PaperIngestBatchFailureSummary {
+  sourceId: string;
+  sourceKind: PaperIngestInput["kind"];
+  canonicalPaperKey?: string;
+  title?: string;
+  error: string;
+}
+
+export interface PaperIngestBatchSummaryCitation {
+  pageKey: string;
+  title: string;
+  pageKind: LiteratureWikiPage["kind"];
+  rationale: string;
+}
+
+export interface PaperIngestBatchSummaryResult {
+  summary: string;
+  summaryTitle: string;
+  summaryMarkdown: string;
+  citations: PaperIngestBatchSummaryCitation[];
+  synthesis: {
+    integratedTakeaway: string;
+    stateOfPlay: string[];
+    tensions: string[];
+    openQuestions: string[];
+  };
+  totalPapers: number;
+  ingestedPapers: number;
+  reusedExistingPapers: number;
+  failedPapers: number;
+  papers: PaperIngestBatchPaperSummary[];
+  failures: PaperIngestBatchFailureSummary[];
+  write: {
+    status: PaperIngestWriteStatus["status"];
+    indexPath?: string;
+    logPath?: string;
+    hotPath?: string;
+  };
+}
+
+export const PAPER_INGEST_BATCH_SUMMARY_MODEL_OUTPUT_SHAPE = {
+  summaryTitle: "string",
+  summary: "string",
+  summaryMarkdown: "string",
+  citations: [
+    {
+      pageKey: "string",
+      title: "string",
+      pageKind: "paper | research_question | method | benchmark | finding | formal_result | claim | topic | synthesis",
+      rationale: "string",
+    },
+  ],
+  synthesis: {
+    integratedTakeaway: "string",
+    stateOfPlay: ["string"],
+    tensions: ["string"],
+    openQuestions: ["string"],
+  },
+} as const;
 
 export class PaperIngest {
   constructor(
-    private readonly modelStep?: PaperIngestPlannerModelStepRunner,
+    private readonly modelStep: PaperIngestPlannerModelStepRunner,
+    private readonly paperDigests: PaperDigests,
     private readonly wikiRetrieve?: WikiRetrieve,
+    private readonly digestCapabilities: PaperDigestCapabilities = {
+      pdfUrlReadSupport: "unsupported",
+      pdfFileReadSupport: "unsupported",
+    },
   ) {}
 
-  async plan(input: PaperIngestPlanRequest): Promise<PaperIngestPlan> {
-    if (!this.modelStep) {
-      throw new Error("PaperIngest.plan requires a configured model step.");
-    }
+  private async plan(input: PaperIngestPlanRequest): Promise<PaperIngestPlan> {
     const existingPageHints = input.existingPageHints ?? await this.retrieveExistingPageHints(input);
     const raw = await this.modelStep({
       stepId: `paper_ingest_plan_${safeStepId(input.digest.canonicalPaperKey)}`,
@@ -335,15 +457,41 @@ export class PaperIngest {
       stageUserInputPolicy: false,
       stream: false,
     });
-      return parseOrRepairPaperIngestPlan(raw, (options) => this.modelStep!({
+      return parseOrRepairPaperIngestPlan(raw, (options) => this.modelStep({
         ...options,
         stageUserInputPolicy: false,
       }));
   }
 
+  private async digestPaper(input: PaperIngestRequest): Promise<PaperDigestResult> {
+    const digestInput = paperDigestInputFromIngestInput(input.paper);
+    const cached = this.paperDigests.lookupPaperDigest(digestInput);
+    if (cached) {
+      return {
+        status: "completed",
+        digest: cached,
+      };
+    }
+
+    const service = new PaperDigests(
+      (options) => this.modelStep(options),
+      undefined,
+      this.digestCapabilities,
+    );
+    const result = await service.digest(digestInput);
+    if (result.status === "completed") {
+      this.paperDigests.recordPaperDigest(digestInput, result.digest);
+      this.paperDigests.resolvePaperDigestFailureByCanonicalKey(result.digest.canonicalPaperKey, result.digest.sourceKind);
+      this.paperDigests.resolvePaperDigestFailure(result.digest.sourceId, result.digest.sourceKind);
+    } else {
+      this.paperDigests.recordPaperDigestFailure(result);
+    }
+    return result;
+  }
+
   private async retrieveExistingPageHints(
     input: PaperIngestPlanRequest,
-  ): Promise<Array<{ pageKind: PaperIngestWikiPageKind; pageKey: string; title: string }>> {
+  ): Promise<PaperIngestExistingPageHint[]> {
     if (!this.wikiRetrieve || !input.wikiRoot) return [];
 
     const discipline = input.discipline ?? input.digest.discipline;
@@ -361,16 +509,24 @@ export class PaperIngest {
       expandLinks: true,
     });
 
-    return dedupeByKey(
-      [...retrieved.primaryPages, ...retrieved.expandedPages]
-        .filter((page): page is WikiRetrievePage & { kind: PaperIngestWikiPageKind } => page.kind !== "overview")
-        .map((page) => ({
+    const hints: PaperIngestExistingPageHint[] = [];
+    const seen = new Set<string>();
+    for (const page of [...retrieved.primaryPages, ...retrieved.expandedPages]) {
+      if (!isPaperIngestWikiPageKind(page.kind)) continue;
+      const key = `${page.kind}:${page.pageKey}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const existing = await readExistingPage(join(input.wikiRoot, page.path));
+      hints.push(existing && isPaperIngestWikiPage(existing)
+        ? buildExistingPageHint(existing)
+        : {
           pageKind: page.kind,
           pageKey: page.pageKey,
           title: page.title,
-        })),
-      (item) => `${item.pageKind}:${item.pageKey}`,
-    ).slice(0, 12);
+        });
+      if (hints.length >= 12) break;
+    }
+    return hints;
   }
 
   materialize(input: { digest: PaperDigest; plan: PaperIngestPlan; discipline?: LiteratureDiscipline }): PaperIngestMaterializationResult {
@@ -383,8 +539,8 @@ export class PaperIngest {
     pages.push(buildPaperPage(digest, plan, now, discipline));
     for (const claim of plan.claimUpdates) pages.push(buildClaimPage(digest, plan, claim, now, discipline));
     for (const update of plan.pageUpdates) {
-      const entityPage = buildEntityPage(digest, plan, update, now, discipline);
-      if (entityPage) pages.push(entityPage);
+      const page = buildResearchPage(digest, plan, update, now, discipline);
+      if (page) pages.push(page);
     }
     for (const topic of plan.topicUpdates) pages.push(buildTopicPage(digest, plan, topic, now, discipline));
     for (const synthesis of buildSynthesisPages(digest, plan, now, discipline)) pages.push(synthesis);
@@ -392,13 +548,11 @@ export class PaperIngest {
     for (const update of plan.pageUpdates) {
       if (
         update.pageKind === "paper"
-        || update.pageKind === "author"
-        || update.pageKind === "concept"
+        || update.pageKind === "research_question"
         || update.pageKind === "method"
-        || update.pageKind === "task"
-        || update.pageKind === "evidence_source"
-        || update.pageKind === "evaluation_setup"
-        || update.pageKind === "measure"
+        || update.pageKind === "benchmark"
+        || update.pageKind === "finding"
+        || update.pageKind === "formal_result"
         || update.pageKind === "claim"
         || update.pageKind === "topic"
         || update.pageKind === "synthesis"
@@ -416,14 +570,29 @@ export class PaperIngest {
     return { pages: dedupePagesByKey(pages), skippedUpdates };
   }
 
-  async prepare(input: PaperIngestRequest): Promise<PreparedPaperIngest> {
-    const plan = await this.plan(input);
+  private async prepareDigest(input: PaperIngestRequest, digest: PaperDigest): Promise<PreparedPaperIngest> {
+    const plan = await this.plan({
+      digest,
+      discipline: input.discipline,
+      wikiRoot: input.wikiRoot,
+      existingPageHints: input.existingPageHints,
+    });
     return {
-      digest: input.digest,
+      digest,
       plan,
       usedExplicitPageHints: Boolean(input.existingPageHints && input.existingPageHints.length > 0),
-      ...this.materialize({ digest: input.digest, plan, discipline: input.discipline }),
+      ...this.materialize({ digest, plan, discipline: input.discipline }),
     };
+  }
+
+  async prepare(input: PaperIngestRequest): Promise<PreparedPaperIngest> {
+    const digestResult = await this.digestPaper(input);
+    if (digestResult.status === "failed") {
+      const error = new Error(digestResult.detail);
+      Object.assign(error, { digestFailure: digestResult });
+      throw error;
+    }
+    return this.prepareDigest(input, digestResult.digest);
   }
 
   async crossReferenceBatch(prepared: PreparedPaperIngest[], wikiRoot: string): Promise<BatchCrossReferenceResult> {
@@ -431,35 +600,224 @@ export class PaperIngest {
     const pages: LiteratureWikiPage[] = [];
     const notes: string[] = [];
     const retrievedHistoricalPages = await this.retrieveCrossReferencePages(prepared, wikiRoot);
+    const historicalResearchQuestionsByKey = new Map<string, LiteratureWikiResearchQuestionPage[]>();
+    const historicalMethodsByKey = new Map<string, LiteratureWikiMethodPage[]>();
+    const historicalBenchmarksByKey = new Map<string, LiteratureWikiBenchmarkPage[]>();
+    const historicalFindingsByKey = new Map<string, LiteratureWikiFindingPage[]>();
+    const historicalFormalResultsByKey = new Map<string, LiteratureWikiFormalResultPage[]>();
     const historicalTopicsByKey = new Map<string, LiteratureWikiTopicPage[]>();
     const historicalClaimsByKey = new Map<string, LiteratureWikiClaimPage[]>();
     for (const page of retrievedHistoricalPages) {
-      if (page.kind === "topic") {
-        historicalTopicsByKey.set(page.pageKey, [...(historicalTopicsByKey.get(page.pageKey) ?? []), page]);
+      if (page.kind === "research_question") {
+        const key = pageIdentity(page);
+        historicalResearchQuestionsByKey.set(key, [...(historicalResearchQuestionsByKey.get(key) ?? []), page]);
+      } else if (page.kind === "method") {
+        const key = pageIdentity(page);
+        historicalMethodsByKey.set(key, [...(historicalMethodsByKey.get(key) ?? []), page]);
+      } else if (page.kind === "benchmark") {
+        const key = pageIdentity(page);
+        historicalBenchmarksByKey.set(key, [...(historicalBenchmarksByKey.get(key) ?? []), page]);
+      } else if (page.kind === "finding") {
+        const key = pageIdentity(page);
+        historicalFindingsByKey.set(key, [...(historicalFindingsByKey.get(key) ?? []), page]);
+      } else if (page.kind === "formal_result") {
+        const key = pageIdentity(page);
+        historicalFormalResultsByKey.set(key, [...(historicalFormalResultsByKey.get(key) ?? []), page]);
+      } else if (page.kind === "topic") {
+        const key = pageIdentity(page);
+        historicalTopicsByKey.set(key, [...(historicalTopicsByKey.get(key) ?? []), page]);
       } else if (page.kind === "claim") {
-        historicalClaimsByKey.set(page.pageKey, [...(historicalClaimsByKey.get(page.pageKey) ?? []), page]);
+        const key = pageIdentity(page);
+        historicalClaimsByKey.set(key, [...(historicalClaimsByKey.get(key) ?? []), page]);
       }
     }
 
+    const researchQuestionGroups = new Map<string, LiteratureWikiResearchQuestionPage[]>();
+    const methodGroups = new Map<string, LiteratureWikiMethodPage[]>();
+    const benchmarkGroups = new Map<string, LiteratureWikiBenchmarkPage[]>();
+    const findingGroups = new Map<string, LiteratureWikiFindingPage[]>();
+    const formalResultGroups = new Map<string, LiteratureWikiFormalResultPage[]>();
     const topicGroups = new Map<string, LiteratureWikiTopicPage[]>();
     const claimGroups = new Map<string, LiteratureWikiClaimPage[]>();
     for (const page of prepared.flatMap((item) => item.pages)) {
-      if (page.kind === "topic") {
-        topicGroups.set(page.pageKey, [...(topicGroups.get(page.pageKey) ?? []), page]);
+      if (page.kind === "research_question") {
+        const key = pageIdentity(page);
+        researchQuestionGroups.set(key, [...(researchQuestionGroups.get(key) ?? []), page]);
+      } else if (page.kind === "method") {
+        const key = pageIdentity(page);
+        methodGroups.set(key, [...(methodGroups.get(key) ?? []), page]);
+      } else if (page.kind === "benchmark") {
+        const key = pageIdentity(page);
+        benchmarkGroups.set(key, [...(benchmarkGroups.get(key) ?? []), page]);
+      } else if (page.kind === "finding") {
+        const key = pageIdentity(page);
+        findingGroups.set(key, [...(findingGroups.get(key) ?? []), page]);
+      } else if (page.kind === "formal_result") {
+        const key = pageIdentity(page);
+        formalResultGroups.set(key, [...(formalResultGroups.get(key) ?? []), page]);
+      } else if (page.kind === "topic") {
+        const key = pageIdentity(page);
+        topicGroups.set(key, [...(topicGroups.get(key) ?? []), page]);
       } else if (page.kind === "claim") {
-        claimGroups.set(page.pageKey, [...(claimGroups.get(page.pageKey) ?? []), page]);
+        const key = pageIdentity(page);
+        claimGroups.set(key, [...(claimGroups.get(key) ?? []), page]);
       }
     }
 
-    for (const [topicKey, topicPages] of topicGroups) {
-      const historicalTopicPages = historicalTopicsByKey.get(topicKey) ?? [];
+    for (const [researchQuestionGroupKey, researchQuestionPages] of researchQuestionGroups) {
+      const historicalPages = historicalResearchQuestionsByKey.get(researchQuestionGroupKey) ?? [];
+      const allPages = [...researchQuestionPages, ...historicalPages];
+      const batchSourcePaperKeys = dedupe(researchQuestionPages.flatMap((page) => page.sourcePaperKeys));
+      const sourcePaperKeys = dedupe(allPages.flatMap((page) => page.sourcePaperKeys));
+      if (batchSourcePaperKeys.length < 2 && historicalPages.length === 0) continue;
+      const representative = researchQuestionPages[0]!;
+      const linkedSourcePapers = sourcePaperKeys.map((key) => `[[${key}]]`).join(", ");
+      const linkedBatchPapers = batchSourcePaperKeys.map((key) => `[[${key}]]`).join(", ");
+      const merged = allPages.slice(1).reduce(
+        (acc, page) => mergeLiteratureWikiPages(acc, page) as LiteratureWikiResearchQuestionPage,
+        representative,
+      );
+      pages.push({
+        ...merged,
+        updatedAt: now,
+        summary: `Cross-referenced research question view spanning ${sourcePaperKeys.length} papers.`,
+        sourcePaperKeys,
+        domainScope: dedupe(allPages.flatMap((page) => page.domainScope)),
+        openSubquestions: dedupe([
+          ...merged.openSubquestions,
+          `Batch cross-reference: ${linkedBatchPapers} now inform this research question.`,
+        ]),
+        relatedPageKeys: dedupe([...merged.relatedPageKeys, ...sourcePaperKeys]),
+      });
+      notes.push(`Cross-referenced research question [[${representative.pageKey}]] across ${linkedSourcePapers}${historicalPages.length > 0 ? " with retrieved historical context" : ""}.`);
+    }
+
+    for (const [methodGroupKey, methodPages] of methodGroups) {
+      const historicalPages = historicalMethodsByKey.get(methodGroupKey) ?? [];
+      const allPages = [...methodPages, ...historicalPages];
+      const batchSourcePaperKeys = dedupe(methodPages.flatMap((page) => page.sourcePaperKeys));
+      const sourcePaperKeys = dedupe(allPages.flatMap((page) => page.sourcePaperKeys));
+      if (batchSourcePaperKeys.length < 2 && historicalPages.length === 0) continue;
+      const representative = methodPages[0]!;
+      const linkedSourcePapers = sourcePaperKeys.map((key) => `[[${key}]]`).join(", ");
+      const linkedBatchPapers = batchSourcePaperKeys.map((key) => `[[${key}]]`).join(", ");
+      const merged = allPages.slice(1).reduce(
+        (acc, page) => mergeLiteratureWikiPages(acc, page) as LiteratureWikiMethodPage,
+        representative,
+      );
+      pages.push({
+        ...merged,
+        updatedAt: now,
+        summary: `Cross-referenced method view spanning ${sourcePaperKeys.length} papers.`,
+        sourcePaperKeys,
+        domainScope: dedupe(allPages.flatMap((page) => page.domainScope)),
+        failureModes: dedupe([
+          ...merged.failureModes,
+          `Batch cross-reference: ${linkedBatchPapers} now provide method evidence or variants.`,
+        ]),
+        relatedPageKeys: dedupe([...merged.relatedPageKeys, ...sourcePaperKeys]),
+      });
+      notes.push(`Cross-referenced method [[${representative.pageKey}]] across ${linkedSourcePapers}${historicalPages.length > 0 ? " with retrieved historical context" : ""}.`);
+    }
+
+    for (const [benchmarkGroupKey, benchmarkPages] of benchmarkGroups) {
+      const historicalPages = historicalBenchmarksByKey.get(benchmarkGroupKey) ?? [];
+      const allPages = [...benchmarkPages, ...historicalPages];
+      const batchSourcePaperKeys = dedupe(benchmarkPages.flatMap((page) => page.sourcePaperKeys));
+      const sourcePaperKeys = dedupe(allPages.flatMap((page) => page.sourcePaperKeys));
+      if (batchSourcePaperKeys.length < 2 && historicalPages.length === 0) continue;
+      const representative = benchmarkPages[0]!;
+      const linkedSourcePapers = sourcePaperKeys.map((key) => `[[${key}]]`).join(", ");
+      const linkedBatchPapers = batchSourcePaperKeys.map((key) => `[[${key}]]`).join(", ");
+      const merged = allPages.slice(1).reduce(
+        (acc, page) => mergeLiteratureWikiPages(acc, page) as LiteratureWikiBenchmarkPage,
+        representative,
+      );
+      pages.push({
+        ...merged,
+        updatedAt: now,
+        summary: `Cross-referenced benchmark view spanning ${sourcePaperKeys.length} papers.`,
+        sourcePaperKeys,
+        domainScope: dedupe(allPages.flatMap((page) => page.domainScope)),
+        knownCaveats: dedupe([
+          ...merged.knownCaveats,
+          `Batch cross-reference: ${linkedBatchPapers} now use or contextualize this benchmark.`,
+        ]),
+        usedByPaperKeys: dedupe([...merged.usedByPaperKeys, ...sourcePaperKeys]),
+        relatedPageKeys: dedupe([...merged.relatedPageKeys, ...sourcePaperKeys]),
+      });
+      notes.push(`Cross-referenced benchmark [[${representative.pageKey}]] across ${linkedSourcePapers}${historicalPages.length > 0 ? " with retrieved historical context" : ""}.`);
+    }
+
+    for (const [findingGroupKey, findingPages] of findingGroups) {
+      const historicalPages = historicalFindingsByKey.get(findingGroupKey) ?? [];
+      const allPages = [...findingPages, ...historicalPages];
+      const batchSourcePaperKeys = dedupe(findingPages.flatMap((page) => page.sourcePaperKeys));
+      const sourcePaperKeys = dedupe(allPages.flatMap((page) => page.sourcePaperKeys));
+      if (batchSourcePaperKeys.length < 2 && historicalPages.length === 0) continue;
+      const representative = findingPages[0]!;
+      const linkedSourcePapers = sourcePaperKeys.map((key) => `[[${key}]]`).join(", ");
+      const linkedBatchPapers = batchSourcePaperKeys.map((key) => `[[${key}]]`).join(", ");
+      const merged = allPages.slice(1).reduce(
+        (acc, page) => mergeLiteratureWikiPages(acc, page) as LiteratureWikiFindingPage,
+        representative,
+      );
+      pages.push({
+        ...merged,
+        updatedAt: now,
+        summary: `Cross-referenced finding view spanning ${sourcePaperKeys.length} papers.`,
+        sourcePaperKeys,
+        domainScope: dedupe(allPages.flatMap((page) => page.domainScope)),
+        supportingPaperKeys: dedupe([...merged.supportingPaperKeys, ...sourcePaperKeys]),
+        caveats: dedupe([
+          ...merged.caveats,
+          `Batch cross-reference: ${linkedBatchPapers} now support, qualify, or contextualize this finding.`,
+        ]),
+        relatedPageKeys: dedupe([...merged.relatedPageKeys, ...sourcePaperKeys]),
+      });
+      notes.push(`Cross-referenced finding [[${representative.pageKey}]] across ${linkedSourcePapers}${historicalPages.length > 0 ? " with retrieved historical context" : ""}.`);
+    }
+
+    for (const [formalResultGroupKey, formalResultPages] of formalResultGroups) {
+      const historicalPages = historicalFormalResultsByKey.get(formalResultGroupKey) ?? [];
+      const allPages = [...formalResultPages, ...historicalPages];
+      const batchSourcePaperKeys = dedupe(formalResultPages.flatMap((page) => page.sourcePaperKeys));
+      const sourcePaperKeys = dedupe(allPages.flatMap((page) => page.sourcePaperKeys));
+      if (batchSourcePaperKeys.length < 2 && historicalPages.length === 0) continue;
+      const representative = formalResultPages[0]!;
+      const linkedSourcePapers = sourcePaperKeys.map((key) => `[[${key}]]`).join(", ");
+      const linkedBatchPapers = batchSourcePaperKeys.map((key) => `[[${key}]]`).join(", ");
+      const merged = allPages.slice(1).reduce(
+        (acc, page) => mergeLiteratureWikiPages(acc, page) as LiteratureWikiFormalResultPage,
+        representative,
+      );
+      pages.push({
+        ...merged,
+        updatedAt: now,
+        summary: `Cross-referenced formal result view spanning ${sourcePaperKeys.length} papers.`,
+        sourcePaperKeys,
+        domainScope: dedupe(allPages.flatMap((page) => page.domainScope)),
+        limitations: dedupe([
+          ...merged.limitations,
+          `Batch cross-reference: ${linkedBatchPapers} now connect to this formal result.`,
+        ]),
+        relatedPageKeys: dedupe([...merged.relatedPageKeys, ...sourcePaperKeys]),
+      });
+      notes.push(`Cross-referenced formal result [[${representative.pageKey}]] across ${linkedSourcePapers}${historicalPages.length > 0 ? " with retrieved historical context" : ""}.`);
+    }
+
+    for (const [topicGroupKey, topicPages] of topicGroups) {
+      const historicalTopicPages = historicalTopicsByKey.get(topicGroupKey) ?? [];
       const allTopicPages = [...topicPages, ...historicalTopicPages];
       const batchSourcePaperKeys = dedupe(topicPages.flatMap((page) => page.sourcePaperKeys));
       const sourcePaperKeys = dedupe(allTopicPages.flatMap((page) => page.sourcePaperKeys));
       if (batchSourcePaperKeys.length < 2 && historicalTopicPages.length === 0) continue;
       const representative = topicPages[0]!;
+      const topicKey = representative.pageKey;
       const combinedThreads = dedupe(allTopicPages.flatMap((page) => page.currentThreads));
       const combinedClaimPageKeys = dedupe(allTopicPages.flatMap((page) => page.claimPageKeys));
+      const linkedSourcePapers = sourcePaperKeys.map((key) => `[[${key}]]`).join(", ");
+      const linkedBatchPapers = batchSourcePaperKeys.map((key) => `[[${key}]]`).join(", ");
       const mergedTopic: LiteratureWikiTopicPage = {
         ...representative,
         discipline: mergeDisciplines(allTopicPages.map((page) => page.discipline)),
@@ -470,62 +828,24 @@ export class PaperIngest {
         scopeNotes: dedupe(allTopicPages.flatMap((page) => page.scopeNotes)),
         currentThreads: dedupe([
           ...combinedThreads,
-          `Batch cross-reference: ${batchSourcePaperKeys.length} papers in the current batch now contribute to this topic thread.`,
+          `Batch cross-reference: ${linkedBatchPapers} now contribute to this topic thread.`,
         ]),
         keyPageKeys: dedupe(allTopicPages.flatMap((page) => page.keyPageKeys)),
         claimPageKeys: combinedClaimPageKeys,
         openTensions: dedupe([
           ...allTopicPages.flatMap((page) => page.openTensions),
           sourcePaperKeys.length >= 2
-            ? `This topic is now informed by ${sourcePaperKeys.length} papers, so disagreements and boundary conditions should remain visible.`
+            ? `This topic is now informed by ${linkedSourcePapers}, so disagreements and boundary conditions should remain visible.`
             : "",
         ]),
         openQuestions: dedupe(allTopicPages.flatMap((page) => page.openQuestions)),
       };
       pages.push(mergedTopic);
-
-      const shouldCreateSynthesis =
-        sourcePaperKeys.length >= 3
-        || combinedClaimPageKeys.length >= 2
-        || combinedThreads.length >= 4;
-
-      if (shouldCreateSynthesis) {
-        const synthesisPageKey = `synthesis_${topicKey}`;
-        const synthesisPage: LiteratureWikiSynthesisPage = {
-          schemaVersion: "kaivu-literature-wiki-page-v1",
-          discipline: mergeDisciplines(allTopicPages.map((page) => page.discipline)),
-          kind: "synthesis",
-          pageKey: synthesisPageKey,
-          title: `Synthesis: ${representative.title}`,
-          summary: `Cross-paper synthesis for ${representative.title}.`,
-          tags: dedupe(["synthesis", "literature", "batch"]),
-          aliases: [],
-          sourcePaperKeys,
-          updatedAt: now,
-          domainScope: dedupe(allTopicPages.flatMap((page) => page.domainScope)),
-          synthesisStatement: `This synthesis integrates the current batch-level picture for ${representative.title}.`,
-          integratedTakeaway: `${sourcePaperKeys.length} papers in the current batch converge on [[${topicKey}]] strongly enough to maintain an explicit synthesis page.`,
-          scopeNotes: dedupe(allTopicPages.flatMap((page) => page.scopeNotes)).slice(0, 6),
-          stateOfPlay: combinedThreads.slice(0, 6),
-          synthesis: dedupe([
-            `Shared topic: [[${topicKey}]]`,
-            ...sourcePaperKeys.map((key) => `Paper in view: [[${key}]]`),
-          ]),
-          keyPageKeys: dedupe([topicKey, ...allTopicPages.flatMap((page) => page.keyPageKeys)]),
-          claimPageKeys: combinedClaimPageKeys,
-          contradictions: collectSynthesisContradictionsFromClaimKeys(combinedClaimPageKeys),
-          tensions: collectSynthesisTensionsFromTopicPages(allTopicPages),
-          openQuestions: dedupe(allTopicPages.flatMap((page) => page.openQuestions)),
-        };
-        pages.push(synthesisPage);
-        notes.push(`Cross-referenced topic [[${topicKey}]] across ${sourcePaperKeys.length} papers${historicalTopicPages.length > 0 ? " with retrieved historical context" : ""} and generated [[${synthesisPageKey}]].`);
-      } else {
-        notes.push(`Cross-referenced topic [[${topicKey}]] across ${sourcePaperKeys.length} papers${historicalTopicPages.length > 0 ? " with retrieved historical context" : ""} without generating a synthesis page because the integrated view is still too thin.`);
-      }
+      notes.push(`Cross-referenced topic [[${topicKey}]] across ${linkedSourcePapers}${historicalTopicPages.length > 0 ? " with retrieved historical context" : ""}; batch-level synthesis is returned by ingestBatchSummary instead of being written as a synthesis page.`);
     }
 
-    for (const [claimKey, claimPages] of claimGroups) {
-      const historicalClaimPages = historicalClaimsByKey.get(claimKey) ?? [];
+    for (const [claimGroupKey, claimPages] of claimGroups) {
+      const historicalClaimPages = historicalClaimsByKey.get(claimGroupKey) ?? [];
       const allClaimPages = [...claimPages, ...historicalClaimPages];
       const batchSourcePaperKeys = dedupe(claimPages.flatMap((page) => page.sourcePaperKeys));
       const sourcePaperKeys = dedupe(allClaimPages.flatMap((page) => page.sourcePaperKeys));
@@ -534,9 +854,11 @@ export class PaperIngest {
       const contradictPaperKeys = dedupe(allClaimPages.flatMap((page) => page.contradictPaperKeys));
       const qualifyPaperKeys = dedupe(allClaimPages.flatMap((page) => page.qualifyPaperKeys));
       const topicPageKeys = dedupe(allClaimPages.flatMap((page) => page.topicPageKeys));
+      const linkedSourcePapers = sourcePaperKeys.map((key) => `[[${key}]]`).join(", ");
+      const linkedBatchPapers = batchSourcePaperKeys.map((key) => `[[${key}]]`).join(", ");
       const notesForClaim = dedupe([
         ...allClaimPages.flatMap((page) => page.notes),
-        `Batch cross-reference consolidated evidence from ${batchSourcePaperKeys.length} papers in the current batch.`,
+        `Batch cross-reference consolidated evidence from ${linkedBatchPapers}.`,
       ]);
       const contradictions = dedupe(allClaimPages.flatMap((page) => page.contradictions));
       const tensions = dedupe([
@@ -544,6 +866,7 @@ export class PaperIngest {
         ...buildClaimTensionsFromEvidence(supportPaperKeys, contradictPaperKeys, qualifyPaperKeys, topicPageKeys),
       ]);
       const representative = claimPages[0]!;
+      const claimKey = representative.pageKey;
       pages.push({
         ...representative,
         discipline: mergeDisciplines(allClaimPages.map((page) => page.discipline)),
@@ -560,7 +883,7 @@ export class PaperIngest {
         notes: notesForClaim,
         claimStatus: deriveBatchClaimStatus(representative.claimStatus, supportPaperKeys, contradictPaperKeys, qualifyPaperKeys, notesForClaim),
       });
-      notes.push(`Cross-referenced claim [[${claimKey}]] across ${sourcePaperKeys.length} papers${historicalClaimPages.length > 0 ? " with retrieved historical context" : ""} and re-evaluated its debate status conservatively.`);
+      notes.push(`Cross-referenced claim [[${claimKey}]] across ${linkedSourcePapers}${historicalClaimPages.length > 0 ? " with retrieved historical context" : ""} and re-evaluated its debate status conservatively.`);
     }
 
     return { pages: dedupePagesByKey(pages), notes };
@@ -574,10 +897,12 @@ export class PaperIngest {
 
     const loaded: LiteratureWikiPage[] = [];
     const seen = new Set<string>();
-    for (const item of prepared.filter((candidate) => !candidate.usedExplicitPageHints)) {
+    for (const item of prepared) {
       const query = dedupe([
         item.plan.paperTitle,
         item.plan.summary,
+        ...item.plan.pageUpdates.map((page) => page.title),
+        ...item.plan.pageUpdates.map((page) => page.rationale),
         ...item.plan.topicUpdates.map((topic) => topic.title),
         ...item.plan.claimUpdates.map((claim) => claim.claimText),
       ]).join(" | ");
@@ -598,12 +923,22 @@ export class PaperIngest {
       });
 
       for (const page of [...retrieved.primaryPages, ...retrieved.expandedPages]) {
-        if (page.kind === "overview") continue;
-        const key = `${page.kind}:${page.pageKey}`;
+        const key = pageIdentity(page);
         if (seen.has(key)) continue;
         const existing = await readExistingPage(join(wikiRoot, page.path));
         if (!existing) continue;
-        if (existing.kind !== "topic" && existing.kind !== "claim" && existing.kind !== "synthesis") continue;
+        if (
+          existing.kind !== "research_question"
+          && existing.kind !== "method"
+          && existing.kind !== "benchmark"
+          && existing.kind !== "finding"
+          && existing.kind !== "formal_result"
+          && existing.kind !== "topic"
+          && existing.kind !== "claim"
+          && existing.kind !== "synthesis"
+        ) {
+          continue;
+        }
         loaded.push(existing);
         seen.add(key);
       }
@@ -622,47 +957,41 @@ export class PaperIngest {
       ...crossReference.pages,
     ]);
     const combinedSkipped = prepared.flatMap((item) => item.skippedUpdates);
+    const changedPageKeys = new Set(combinedPages.map((page) => pageIdentity(page)));
     const existingPages = await loadExistingWikiPages(wikiRoot);
     const mergedByKey = new Map<string, LiteratureWikiPage>();
 
-    for (const page of existingPages.filter((page) => page.kind !== "overview")) {
-      mergedByKey.set(`${page.kind}:${page.pageKey}`, page);
+    for (const page of existingPages) {
+      mergedByKey.set(pageIdentity(page), page);
     }
     for (const page of combinedPages) {
-      const key = `${page.kind}:${page.pageKey}`;
+      const key = pageIdentity(page);
       const current = mergedByKey.get(key);
       mergedByKey.set(key, current ? mergeLiteratureWikiPages(current, page) : page);
     }
 
     const mergedPages = [...mergedByKey.values()];
-    for (const page of mergedPages) {
-      const path = literatureWikiPagePath(wikiRoot, page);
+    const pagesToWrite = mergedPages.filter((page) => changedPageKeys.has(pageIdentity(page)));
+    for (const page of pagesToWrite) {
+      const path = literatureWikiPagePath(wikiRoot, page.discipline, page.kind, page.pageKey);
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, renderLiteratureWikiPageMarkdown(page), "utf-8");
       writtenFiles.push(path);
     }
 
-    const overviewPages = buildOverviewPages(mergedPages);
-    const overviewPage = overviewPages.find((page) => page.pageKey === "literature_overview") ?? overviewPages[0]!;
-    for (const overview of overviewPages) {
-      const overviewPath = literatureWikiPagePath(wikiRoot, overview);
-      await mkdir(dirname(overviewPath), { recursive: true });
-      await writeFile(overviewPath, renderLiteratureWikiPageMarkdown(overview), "utf-8");
-      writtenFiles.push(overviewPath);
-    }
-
-    const finalPages = dedupePagesByKey([...mergedPages, ...overviewPages]);
+    const finalPages = mergedPages;
     const indexPath = join(wikiRoot, "index.md");
     await mkdir(dirname(indexPath), { recursive: true });
     await writeFile(indexPath, renderLiteratureWikiIndex(finalPages), "utf-8");
     writtenFiles.push(indexPath);
 
-    const subIndexFiles = await writeLiteratureWikiSubIndexes(wikiRoot, finalPages);
+    const subIndexFiles = await writeLiteratureWikiSubIndexes(wikiRoot, finalPages, pagesToWrite);
     writtenFiles.push(...subIndexFiles);
 
     const logPath = join(wikiRoot, "log.md");
     await mkdir(dirname(logPath), { recursive: true });
-    await appendFile(logPath, renderLiteratureWikiBatchLogEntry(prepared, overviewPage, crossReference));
+    await appendFile(logPath, renderLiteratureWikiBatchLogEntry(prepared, crossReference));
+    writtenFiles.push(logPath);
 
     const hotPath = join(wikiRoot, "hot.md");
     await mkdir(dirname(hotPath), { recursive: true });
@@ -672,79 +1001,449 @@ export class PaperIngest {
     const disciplineHotPaths = await writeDisciplineHotCaches(wikiRoot, prepared, finalPages, crossReference);
     writtenFiles.push(...disciplineHotPaths);
 
+    const lookupIndex = prepared.reduce<LiteratureWikiLookupIndex>((acc, item) => {
+      const lookup = buildLiteratureWikiLookupResult(item.digest.canonicalPaperKey, mergedPages);
+      acc[item.digest.canonicalPaperKey] = lookup;
+      return acc;
+    }, {});
+    await persistPaperIngestManifest(wikiRoot, lookupIndex);
     return {
+      digests: prepared.map((item) => item.digest),
       completed: prepared,
       failures: [],
-      writtenFiles,
-      indexPath,
-      logPath,
-      hotPath,
-      disciplineHotPaths,
-      overviewPage,
-      pages: mergedPages,
-      skippedUpdates: combinedSkipped,
+      lookupIndex,
+      crossReference,
+      write: {
+        status: "written",
+        writtenFiles,
+        skippedUpdates: combinedSkipped,
+        indexPath,
+        logPath,
+        hotPath,
+        disciplineHotPaths,
+      },
     };
   }
 
-  async write(input: PaperIngestRequest & { plan: PaperIngestPlan }): Promise<PaperIngestWriteResult> {
-    const prepared: PreparedPaperIngest = {
-      digest: input.digest,
-      plan: input.plan,
-      usedExplicitPageHints: Boolean(input.existingPageHints && input.existingPageHints.length > 0),
-      ...this.materialize({ digest: input.digest, plan: input.plan, discipline: input.discipline }),
-    };
-    const committed = await this.commitBatch(input.wikiRoot, [prepared]);
+  private async writePrepared(wikiRoot: string, prepared: PreparedPaperIngest): Promise<PaperIngestWriteResult> {
+    const crossReference = await this.crossReferenceBatch([prepared], wikiRoot);
+    const committed = await this.commitBatch(wikiRoot, [prepared], crossReference);
     return {
-      pages: committed.pages,
-      skippedUpdates: committed.skippedUpdates,
-      overviewPage: committed.overviewPage,
-      writtenFiles: committed.writtenFiles,
-      indexPath: committed.indexPath,
-      logPath: committed.logPath,
-      hotPath: committed.hotPath,
-      disciplineHotPaths: committed.disciplineHotPaths,
+      lookup: committed.lookupIndex[prepared.digest.canonicalPaperKey]
+        ? committed.lookupIndex[prepared.digest.canonicalPaperKey]
+        : buildLiteratureWikiLookupResult(prepared.digest.canonicalPaperKey, prepared.pages),
+      write: committed.write,
     };
   }
 
   async ingest(input: PaperIngestRequest): Promise<PaperIngestWriteResult & { plan: PaperIngestPlan }> {
-    const plan = await this.plan(input);
-    const written = await this.write({
-      ...input,
-      plan,
+    const digestResult = await this.digestPaper(input);
+    if (digestResult.status === "failed") {
+      throw new Error(digestResult.detail);
+    }
+    const digest = digestResult.digest;
+    const manifest = await readPaperIngestManifest(input.wikiRoot);
+    const existingRecord = manifest[digest.canonicalPaperKey];
+    if (existingRecord) {
+      const existingLookup = await loadPagesFromIngestManifestRecord(input.wikiRoot, existingRecord);
+      if (existingLookup.length > 0) {
+        return {
+          plan: buildNoopPaperIngestPlan(digest),
+          lookup: existingLookup,
+          write: {
+            status: "reused_existing",
+            writtenFiles: [],
+            skippedUpdates: [],
+          },
+        };
+      }
+    }
+    const plan = await this.plan({
+      digest,
+      discipline: input.discipline,
+      wikiRoot: input.wikiRoot,
+      existingPageHints: input.existingPageHints,
     });
+    const prepared: PreparedPaperIngest = {
+      digest,
+      plan,
+      usedExplicitPageHints: Boolean(input.existingPageHints && input.existingPageHints.length > 0),
+      ...this.materialize({ digest, plan, discipline: input.discipline }),
+    };
+    const written = await this.writePrepared(input.wikiRoot, prepared);
     return {
       ...written,
       plan,
     };
   }
 
+  async ingestBatchSummary(inputs: PaperIngestRequest[]): Promise<PaperIngestBatchSummaryResult> {
+    const detailed = await this.ingestBatchDetailed(inputs);
+    return this.summarizeIngestBatchPages(detailed);
+  }
+
   async ingestBatch(inputs: PaperIngestRequest[]): Promise<PaperIngestBatchResult> {
+    return this.ingestBatchDetailed(inputs);
+  }
+
+  async ingestBatchDetailed(inputs: PaperIngestRequest[]): Promise<PaperIngestBatchResult> {
     if (inputs.length === 0) {
-      return { completed: [], failures: [], writtenFiles: [], pages: [], skippedUpdates: [] };
+      return { digests: [], completed: [], failures: [], lookupIndex: {}, crossReference: { pages: [], notes: [] }, write: { status: "reused_existing", writtenFiles: [], skippedUpdates: [] } };
     }
+    const wikiRoot = inputs[0]!.wikiRoot;
+    for (const input of inputs) {
+      if (input.wikiRoot !== wikiRoot) {
+        throw new Error("PaperIngest.ingestBatchDetailed requires all inputs to use the same wikiRoot.");
+      }
+    }
+    const existingManifest = await readPaperIngestManifest(wikiRoot);
+    const lookupIndex: LiteratureWikiLookupIndex = {};
+    const digests: PaperDigest[] = [];
     const completed: PreparedPaperIngest[] = [];
-    const failures: Array<{ digest: PaperDigest; error: string }> = [];
-    const results = await Promise.allSettled(inputs.map((input) => this.prepare(input)));
+    const failures: PaperIngestBatchResult["failures"] = [];
+    const pendingInputs: Array<{ input: PaperIngestRequest; digest: PaperDigest }> = [];
+    for (const input of inputs) {
+      const digestResult = await this.digestPaper(input);
+      if (digestResult.status === "failed") {
+        failures.push({
+          paper: input.paper,
+          error: digestResult.detail,
+          digestFailure: digestResult,
+        });
+        continue;
+      }
+      const digest = digestResult.digest;
+      digests.push(digest);
+      const existingRecord = existingManifest[digest.canonicalPaperKey];
+      if (!existingRecord) {
+        pendingInputs.push({ input, digest });
+        continue;
+      }
+      const existingLookup = await loadPagesFromIngestManifestRecord(input.wikiRoot, existingRecord);
+      if (existingLookup.length > 0) {
+        lookupIndex[digest.canonicalPaperKey] = existingLookup;
+        continue;
+      }
+      pendingInputs.push({ input, digest });
+    }
+    const results = await Promise.allSettled(pendingInputs.map(({ input, digest }) => this.prepareDigest(input, digest)));
     for (let index = 0; index < results.length; index += 1) {
       const result = results[index];
-      const input = inputs[index];
-      if (!input) continue;
+      const pending = pendingInputs[index];
+      if (!pending) continue;
       if (result?.status === "fulfilled") {
         completed.push(result.value);
       } else {
         failures.push({
-          digest: input.digest,
+          paper: pending.input.paper,
+          digest: pending.digest,
           error: result?.reason instanceof Error ? result.reason.message : String(result?.reason ?? "Unknown batch ingest failure"),
         });
       }
     }
     if (completed.length === 0) {
-      return { completed, failures, writtenFiles: [], pages: [], skippedUpdates: [] };
+      return { digests, completed, failures, lookupIndex, crossReference: { pages: [], notes: [] }, write: { status: "reused_existing", writtenFiles: [], skippedUpdates: [] } };
     }
-    const crossReference = await this.crossReferenceBatch(completed, inputs[0]!.wikiRoot);
-    const committed = await this.commitBatch(inputs[0]!.wikiRoot, completed, crossReference);
-    return { ...committed, failures };
+    const crossReference = await this.crossReferenceBatch(completed, wikiRoot);
+    const committed = await this.commitBatch(wikiRoot, completed, crossReference);
+    return {
+      ...committed,
+      digests,
+      failures,
+      lookupIndex: {
+        ...lookupIndex,
+        ...committed.lookupIndex,
+      },
+    };
   }
+
+  private async summarizeIngestBatchPages(result: PaperIngestBatchResult): Promise<PaperIngestBatchSummaryResult> {
+    const pages = collectPaperIngestBatchSummaryPages(result);
+    const raw = await this.modelStep({
+      stepId: "paper_ingest_batch_summary",
+      system: "You synthesize literature wiki pages after a paper-ingest batch as valid JSON.",
+      prompt: renderPaperIngestBatchSummaryPrompt({ result, pages }),
+      includeRenderedContext: false,
+      stageUserInputPolicy: false,
+      stream: false,
+    });
+    const output = await parseOrRepairPaperIngestBatchSummary(raw, (options) => this.modelStep({
+      ...options,
+      stageUserInputPolicy: false,
+    }));
+    return summarizePaperIngestBatchResult(result, output);
+  }
+}
+
+function summarizePaperIngestBatchResult(
+  result: PaperIngestBatchResult,
+  output: PaperIngestBatchSummaryModelOutput,
+): PaperIngestBatchSummaryResult {
+  const completedByKey = new Map(result.completed.map((item) => [item.digest.canonicalPaperKey, item] as const));
+  const papers = result.digests.map<PaperIngestBatchPaperSummary>((digest) => {
+    const completed = completedByKey.get(digest.canonicalPaperKey);
+    const lookup = result.lookupIndex[digest.canonicalPaperKey] ?? [];
+    return {
+      canonicalPaperKey: digest.canonicalPaperKey,
+      title: digest.title,
+      status: completed ? "ingested" : "reused_existing",
+      summary: completed?.plan.summary ?? digest.oneSentenceSummary,
+      affectedPageKeys: dedupe([
+        ...(completed ? completed.pages.map((page) => page.pageKey) : []),
+        ...lookup.map((page) => page.pageKey),
+        ...result.crossReference.pages.map((page) => page.pageKey),
+      ]),
+    };
+  });
+  const ingestedPapers = papers.filter((paper) => paper.status === "ingested").length;
+  const reusedExistingPapers = papers.filter((paper) => paper.status === "reused_existing").length;
+  const failedPapers = result.failures.length;
+  const citations = output.citations.length > 0
+    ? output.citations
+    : collectFallbackBatchSummaryCitations(result);
+  return {
+    summary: output.summary,
+    summaryTitle: output.summaryTitle,
+    summaryMarkdown: ensureBatchSummaryMarkdownLinks(output.summaryMarkdown, citations),
+    citations,
+    synthesis: output.synthesis,
+    totalPapers: result.digests.length + failedPapers,
+    ingestedPapers,
+    reusedExistingPapers,
+    failedPapers,
+    papers,
+    failures: result.failures.map((failure) => ({
+      sourceId: failure.digest?.sourceId ?? failure.paper.sourceId,
+      sourceKind: failure.paper.kind,
+      canonicalPaperKey: failure.digest?.canonicalPaperKey,
+      title: failure.digest?.title,
+      error: failure.error,
+    })),
+    write: {
+      status: result.write.status,
+      indexPath: result.write.indexPath,
+      logPath: result.write.logPath,
+      hotPath: result.write.hotPath,
+    },
+  };
+}
+
+function collectFallbackBatchSummaryCitations(result: PaperIngestBatchResult): PaperIngestBatchSummaryCitation[] {
+  const pages = collectPaperIngestBatchSummaryPages(result)
+    .map((item) => item.page);
+  return dedupeByKey(pages, (page) => `${page.kind}:${page.pageKey}`)
+    .slice(0, 12)
+    .map((page) => ({
+      pageKey: page.pageKey,
+      title: page.title,
+      pageKind: page.kind,
+      rationale: "Relevant page touched or retrieved during this batch ingest.",
+    }));
+}
+
+function ensureBatchSummaryMarkdownLinks(
+  markdown: string,
+  citations: PaperIngestBatchSummaryCitation[],
+): string {
+  const trimmed = markdown.trim();
+  const hasWikiLinks = /\[\[[^\]]+\]\]/u.test(trimmed);
+  if (hasWikiLinks || citations.length === 0) return trimmed;
+  const citationLines = citations
+    .slice(0, 8)
+    .map((item) => `- [[${item.pageKey}]] (${item.pageKind}): ${item.rationale}`);
+  return [
+    trimmed,
+    "",
+    "## Cited Wiki Pages",
+    "",
+    ...citationLines,
+  ].join("\n");
+}
+
+interface PaperIngestBatchSummaryModelOutput {
+  summaryTitle: string;
+  summary: string;
+  summaryMarkdown: string;
+  citations: PaperIngestBatchSummaryCitation[];
+  synthesis: {
+    integratedTakeaway: string;
+    stateOfPlay: string[];
+    tensions: string[];
+    openQuestions: string[];
+  };
+}
+
+interface PaperIngestBatchSummaryPageContext {
+  page: LiteratureWikiPage;
+  markdown: string;
+}
+
+const PAPER_INGEST_BATCH_SUMMARY_SCHEMA: StructuredSchema = {
+  name: "paper_ingest_batch_summary",
+  description: "A synthesized summary of the wiki pages touched by a paper-ingest batch.",
+  schema: {
+    type: "object",
+    required: ["summaryTitle", "summary", "summaryMarkdown", "citations", "synthesis"],
+    properties: {
+      summaryTitle: { type: "string" },
+      summary: { type: "string" },
+      summaryMarkdown: { type: "string" },
+      citations: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["pageKey", "title", "pageKind", "rationale"],
+          properties: {
+            pageKey: { type: "string" },
+            title: { type: "string" },
+            pageKind: { type: "string" },
+            rationale: { type: "string" },
+          },
+        },
+      },
+      synthesis: {
+        type: "object",
+        required: ["integratedTakeaway", "stateOfPlay", "tensions", "openQuestions"],
+        properties: {
+          integratedTakeaway: { type: "string" },
+          stateOfPlay: { type: "array", items: { type: "string" } },
+          tensions: { type: "array", items: { type: "string" } },
+          openQuestions: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+  },
+};
+
+function renderPaperIngestBatchSummaryPrompt(input: {
+  result: PaperIngestBatchResult;
+  pages: PaperIngestBatchSummaryPageContext[];
+}): string {
+  const paperLines = input.result.digests.map((digest) => {
+    const completed = input.result.completed.find((item) => item.digest.canonicalPaperKey === digest.canonicalPaperKey);
+    const status = completed ? "ingested" : "reused_existing";
+    return `- ${status}: ${digest.title} ([[${digest.canonicalPaperKey}]])`;
+  });
+  const pageBlocks = input.pages.map(({ page, markdown }, index) => [
+    `## Page ${index + 1}: [[${page.pageKey}]]`,
+    `kind: ${page.kind}`,
+    `title: ${page.title}`,
+    `summary: ${page.summary}`,
+    "",
+    markdown.trim(),
+  ].join("\n"));
+
+  return [
+    "You are synthesizing the result of a paper-ingest batch for a persistent literature wiki.",
+    "",
+    "Do not summarize the operation mechanically.",
+    "Read the touched wiki pages and explain the integrated knowledge update: what changed in the wiki's understanding, what claims or topics moved, and what tensions or open questions are now visible.",
+    "Write summaryMarkdown like a compact literature review: group evidence by research question, method, benchmark, finding, formal result, claim, and topic when those pages exist.",
+    "Prefer comparative language across papers and pages: common conclusions, disagreements, boundary conditions, and remaining gaps.",
+    "This is similar to a query answer or a synthesis page, but it should be returned to the caller only; do not assume it will be written as a wiki page.",
+    "Use citations with wiki page keys such as [[page_key]] inside summaryMarkdown. Every substantive paragraph should cite at least one wiki page.",
+    "The Touched Wiki Pages section includes both pages produced by this batch and pages loaded from the ingest lookup index for reused or affected papers; use those existing pages as context when they are relevant.",
+    "",
+    "# Batch Papers",
+    "",
+    paperLines.join("\n") || "- no completed or reused papers",
+    "",
+    "# Failures",
+    "",
+    input.result.failures.map((failure) => `- ${failure.paper.sourceId}: ${failure.error}`).join("\n") || "- none",
+    "",
+    "# Touched Wiki Pages",
+    "",
+    pageBlocks.join("\n\n---\n\n") || "No wiki pages were available for synthesis.",
+    "",
+    "# Output",
+    "",
+    "Return valid JSON only.",
+    "Do not include Markdown fences.",
+    "Match this JSON shape exactly:",
+    "",
+    JSON.stringify(PAPER_INGEST_BATCH_SUMMARY_MODEL_OUTPUT_SHAPE, null, 2),
+  ].join("\n");
+}
+
+async function parseOrRepairPaperIngestBatchSummary(
+  rawText: string,
+  modelStep: PaperIngestPlannerModelStepRunner,
+): Promise<PaperIngestBatchSummaryModelOutput> {
+  try {
+    return coercePaperIngestBatchSummary(parseStructuredOutput(rawText, PAPER_INGEST_BATCH_SUMMARY_SCHEMA));
+  } catch (error) {
+    try {
+      return coercePaperIngestBatchSummary(salvageStructuredOutput(rawText, PAPER_INGEST_BATCH_SUMMARY_SCHEMA));
+    } catch {
+      const repaired = await modelStep({
+        stepId: "paper_ingest_batch_summary_repair",
+        system: "You repair invalid paper-ingest batch summaries into valid JSON.",
+        prompt: repairInstruction(
+          PAPER_INGEST_BATCH_SUMMARY_SCHEMA,
+          rawText,
+          error instanceof Error ? error.message : String(error),
+        ),
+        includeRenderedContext: false,
+        stream: false,
+      });
+      return coercePaperIngestBatchSummary(parseStructuredOutput(repaired, PAPER_INGEST_BATCH_SUMMARY_SCHEMA));
+    }
+  }
+}
+
+function coercePaperIngestBatchSummary(value: Record<string, unknown>): PaperIngestBatchSummaryModelOutput {
+  const synthesis = isRecord(value.synthesis) ? value.synthesis : {};
+  return {
+    summaryTitle: asString(value.summaryTitle),
+    summary: asString(value.summary),
+    summaryMarkdown: asString(value.summaryMarkdown),
+    citations: asObjectArray(value.citations).map((item) => ({
+      pageKey: asString(item.pageKey),
+      title: asString(item.title),
+      pageKind: normalizePageKindForSummary(asString(item.pageKind)),
+      rationale: asString(item.rationale),
+    })),
+    synthesis: {
+      integratedTakeaway: asString(synthesis.integratedTakeaway),
+      stateOfPlay: asStringArray(synthesis.stateOfPlay),
+      tensions: asStringArray(synthesis.tensions),
+      openQuestions: asStringArray(synthesis.openQuestions),
+    },
+  };
+}
+
+function collectPaperIngestBatchSummaryPages(result: PaperIngestBatchResult): PaperIngestBatchSummaryPageContext[] {
+  const byKey = new Map<string, LiteratureWikiPage>();
+  for (const item of result.completed) {
+    for (const page of item.pages) byKey.set(pageIdentity(page), page);
+  }
+  for (const page of result.crossReference.pages) {
+    byKey.set(pageIdentity(page), page);
+  }
+  for (const pages of Object.values(result.lookupIndex)) {
+    for (const page of pages) byKey.set(pageIdentity(page), page);
+  }
+  return [...byKey.values()]
+    .sort((left, right) => pageKindOrder().indexOf(left.kind) - pageKindOrder().indexOf(right.kind))
+    .map((page) => ({
+      page,
+      markdown: renderLiteratureWikiPageMarkdown(page),
+    }));
+}
+
+function normalizePageKindForSummary(value: string): LiteratureWikiPage["kind"] {
+  return normalizeEnum(value, [
+    "paper",
+    "research_question",
+    "method",
+    "benchmark",
+    "finding",
+    "formal_result",
+    "claim",
+    "topic",
+    "synthesis",
+  ], "synthesis");
 }
 
 const PAPER_INGEST_PLAN_SCHEMA: StructuredSchema = {
@@ -752,7 +1451,7 @@ const PAPER_INGEST_PLAN_SCHEMA: StructuredSchema = {
   description: "A structured plan describing how one paper digest should update a persistent literature wiki.",
   schema: {
     type: "object",
-    required: ["paperKey", "paperTitle", "schemaFamily", "ingestObjective", "summary", "pageUpdates", "claimUpdates", "topicUpdates", "authorUpdates", "logEntry"],
+    required: ["paperKey", "paperTitle", "schemaFamily", "ingestObjective", "summary", "pageUpdates", "claimUpdates", "topicUpdates", "logEntry"],
     properties: {
       paperKey: { type: "string" },
       paperTitle: { type: "string" },
@@ -801,20 +1500,6 @@ const PAPER_INGEST_PLAN_SCHEMA: StructuredSchema = {
             action: { type: "string" },
             rationale: { type: "string" },
             topicThreads: { type: "array", items: { type: "string" } },
-          },
-        },
-      },
-      authorUpdates: {
-        type: "array",
-        items: {
-          type: "object",
-          required: ["authorKey", "authorName", "action", "rationale", "updates"],
-          properties: {
-            authorKey: { type: "string" },
-            authorName: { type: "string" },
-            action: { type: "string" },
-            rationale: { type: "string" },
-            updates: { type: "array", items: { type: "string" } },
           },
         },
       },
@@ -868,7 +1553,6 @@ function coercePaperIngestPlan(value: Record<string, unknown>): PaperIngestPlan 
     pageUpdates: asObjectArray(value.pageUpdates).map(coercePageUpdate),
     claimUpdates: asObjectArray(value.claimUpdates).map(coerceClaimUpdate),
     topicUpdates: asObjectArray(value.topicUpdates).map(coerceTopicUpdate),
-    authorUpdates: asObjectArray(value.authorUpdates).map(coerceAuthorUpdate),
     logEntry: coerceLogEntry(isRecord(value.logEntry) ? value.logEntry : {}),
   };
 }
@@ -906,16 +1590,6 @@ function coerceTopicUpdate(value: Record<string, unknown>): PaperIngestTopicUpda
   };
 }
 
-function coerceAuthorUpdate(value: Record<string, unknown>): PaperIngestAuthorUpdate {
-  return {
-    authorKey: asString(value.authorKey),
-    authorName: asString(value.authorName),
-    action: normalizeEnum(asString(value.action), ["create", "update"], "update"),
-    rationale: asString(value.rationale),
-    updates: asStringArray(value.updates),
-  };
-}
-
 function coerceLogEntry(value: Record<string, unknown>): PaperIngestLogEntry {
   return {
     title: asString(value.title),
@@ -938,16 +1612,14 @@ function normalizeSchemaFamily(value: unknown): PaperDigestSchemaFamily {
 function normalizePageKind(value: unknown): PaperIngestWikiPageKind {
   return normalizeEnum(asString(value), [
     "paper",
-    "author",
-    "concept",
+    "research_question",
     "method",
-    "task",
-    "evidence_source",
-    "evaluation_setup",
-    "measure",
-            "claim",
-            "topic",
-            "synthesis",
+    "benchmark",
+    "finding",
+    "formal_result",
+    "claim",
+    "topic",
+    "synthesis",
   ], "paper") as PaperIngestWikiPageKind;
 }
 
@@ -988,49 +1660,245 @@ function buildPaperPage(digest: PaperDigest, plan: PaperIngestPlan, updatedAt: s
   };
 }
 
-function buildEntityPage(
+function buildResearchPage(
   digest: PaperDigest,
   plan: PaperIngestPlan,
   update: PaperIngestPlan["pageUpdates"][number],
   updatedAt: string,
   discipline: LiteratureDiscipline,
-): LiteratureWikiEntityPage | null {
-  if (
-    update.pageKind !== "author"
-    && update.pageKind !== "concept"
-    && update.pageKind !== "method"
-    && update.pageKind !== "task"
-    && update.pageKind !== "evidence_source"
-    && update.pageKind !== "evaluation_setup"
-    && update.pageKind !== "measure"
-  ) {
-    return null;
+): LiteratureWikiPage | null {
+  switch (update.pageKind) {
+    case "research_question":
+      return buildResearchQuestionPage(digest, plan, update, updatedAt, discipline);
+    case "method":
+      return buildMethodPage(digest, plan, update, updatedAt, discipline);
+    case "benchmark":
+      return buildBenchmarkPage(digest, plan, update, updatedAt, discipline);
+    case "finding":
+      return buildFindingPage(digest, plan, update, updatedAt, discipline);
+    case "formal_result":
+      return buildFormalResultPage(digest, plan, update, updatedAt, discipline);
+    default:
+      return null;
   }
+}
 
+function buildResearchQuestionPage(
+  digest: PaperDigest,
+  plan: PaperIngestPlan,
+  update: PaperIngestPlan["pageUpdates"][number],
+  updatedAt: string,
+  discipline: LiteratureDiscipline,
+): LiteratureWikiResearchQuestionPage {
   return {
     schemaVersion: "kaivu-literature-wiki-page-v1",
     discipline,
-    kind: update.pageKind,
+    kind: "research_question",
     pageKey: update.pageKey,
     title: update.title,
     summary: update.rationale,
-    tags: dedupe([update.pageKind, "literature", digest.schemaFamily, update.priority]),
+    tags: dedupe(["research_question", "literature", digest.schemaFamily, update.priority]),
     aliases: [],
     sourcePaperKeys: [digest.canonicalPaperKey],
     updatedAt,
     domainScope: inferPaperDomainScope(digest),
-    statement: update.patchOutline[0] || update.title,
-    rationale: update.rationale,
+    question: update.patchOutline[0] || update.title,
+    motivation: update.rationale || digest.motivation,
+    currentAnswer: digest.oneSentenceSummary,
+    relatedTopicKeys: plan.topicUpdates.map((item) => item.topicKey),
+    claimPageKeys: plan.claimUpdates.map((item) => item.claimKey),
+    findingPageKeys: plan.pageUpdates
+      .filter((item) => item.pageKind === "finding")
+      .map((item) => item.pageKey),
+    methodPageKeys: plan.pageUpdates
+      .filter((item) => item.pageKind === "method")
+      .map((item) => item.pageKey),
+    benchmarkKeys: plan.pageUpdates
+      .filter((item) => item.pageKind === "benchmark")
+      .map((item) => item.pageKey),
+    openSubquestions: dedupe([
+      ...update.patchOutline.slice(1),
+      ...digest.uncertainty,
+      ...digest.relatedWorkSignals.followUpDirections,
+    ]).slice(0, 10),
     relatedPageKeys: dedupe([
       plan.paperKey,
       ...plan.claimUpdates.map((item) => item.claimKey),
       ...plan.topicUpdates.map((item) => item.topicKey),
-        ...plan.pageUpdates
-          .filter((item) => item.pageKey !== update.pageKey)
-          .map((item) => item.pageKey),
+      ...plan.pageUpdates
+        .filter((item) => item.pageKey !== update.pageKey)
+        .map((item) => item.pageKey),
     ]),
-    patchOutline: update.patchOutline,
   };
+}
+
+function buildBenchmarkPage(
+  digest: PaperDigest,
+  plan: PaperIngestPlan,
+  update: PaperIngestPlan["pageUpdates"][number],
+  updatedAt: string,
+  discipline: LiteratureDiscipline,
+): LiteratureWikiBenchmarkPage {
+  return {
+    schemaVersion: "kaivu-literature-wiki-page-v1",
+    discipline,
+    kind: "benchmark",
+    pageKey: update.pageKey,
+    title: update.title,
+    summary: update.rationale,
+    tags: dedupe(["benchmark", "literature", digest.schemaFamily, update.priority]),
+    aliases: [],
+    sourcePaperKeys: [digest.canonicalPaperKey],
+    updatedAt,
+    domainScope: inferPaperDomainScope(digest),
+    benchmarkStatement: update.patchOutline[0] || update.title,
+    evaluates: dedupe([
+      ...digest.literatureReviewUse.searchTerms,
+      ...digest.specialized.computationalEmpirical.benchmarks,
+      ...digest.specialized.methodologicalOrInstrumentation.evaluationSetup,
+    ]).slice(0, 10),
+    datasetOrSuite: dedupe([
+      ...digest.specialized.computationalEmpirical.datasets,
+      ...digest.specialized.experimentalEmpirical.studySystemOrSamples,
+      update.title,
+    ])[0] ?? update.title,
+    metrics: dedupe([
+      ...digest.specialized.computationalEmpirical.metrics,
+      ...digest.specialized.experimentalEmpirical.measurementEndpoints,
+      ...digest.importantTerms.filter((term) => /metric|score|accuracy|f1|auc|bleu|rouge|loss|error|measure/i.test(term)),
+    ]).slice(0, 10),
+    knownCaveats: dedupe([
+      ...digest.limitations,
+      ...digest.uncertainty,
+      ...digest.specialized.computationalEmpirical.failureModesOrRisks,
+      ...digest.specialized.experimentalEmpirical.sourcesOfBias,
+    ]).slice(0, 10),
+    usedByPaperKeys: [digest.canonicalPaperKey],
+    relatedMethodKeys: plan.pageUpdates
+      .filter((item) => item.pageKind === "method")
+      .map((item) => item.pageKey),
+    relatedFindingKeys: plan.pageUpdates
+      .filter((item) => item.pageKind === "finding")
+      .map((item) => item.pageKey),
+    relatedPageKeys: relatedPlanPageKeys(plan, update.pageKey),
+  };
+}
+
+function buildFindingPage(
+  digest: PaperDigest,
+  plan: PaperIngestPlan,
+  update: PaperIngestPlan["pageUpdates"][number],
+  updatedAt: string,
+  discipline: LiteratureDiscipline,
+): LiteratureWikiFindingPage {
+  return {
+    schemaVersion: "kaivu-literature-wiki-page-v1",
+    discipline,
+    kind: "finding",
+    pageKey: update.pageKey,
+    title: update.title,
+    summary: update.rationale,
+    tags: dedupe(["finding", "literature", digest.schemaFamily, update.priority]),
+    aliases: [],
+    sourcePaperKeys: [digest.canonicalPaperKey],
+    updatedAt,
+    domainScope: inferPaperDomainScope(digest),
+    findingStatement: update.patchOutline[0] || update.rationale || update.title,
+    evidenceType: digest.schemaFamily,
+    supportingPaperKeys: [digest.canonicalPaperKey],
+    relatedMethodKeys: plan.pageUpdates
+      .filter((item) => item.pageKind === "method")
+      .map((item) => item.pageKey),
+    relatedBenchmarkKeys: plan.pageUpdates
+      .filter((item) => item.pageKind === "benchmark")
+      .map((item) => item.pageKey),
+    supportsClaimKeys: plan.claimUpdates
+      .filter((item) => item.effect === "supports")
+      .map((item) => item.claimKey),
+    qualifiesClaimKeys: plan.claimUpdates
+      .filter((item) => item.effect === "qualifies")
+      .map((item) => item.claimKey),
+    contradictsClaimKeys: plan.claimUpdates
+      .filter((item) => item.effect === "contradicts")
+      .map((item) => item.claimKey),
+    caveats: dedupe([
+      ...update.patchOutline.slice(1),
+      ...digest.limitations,
+      ...digest.uncertainty,
+    ]).slice(0, 10),
+    relatedPageKeys: relatedPlanPageKeys(plan, update.pageKey),
+  };
+}
+
+function buildFormalResultPage(
+  digest: PaperDigest,
+  plan: PaperIngestPlan,
+  update: PaperIngestPlan["pageUpdates"][number],
+  updatedAt: string,
+  discipline: LiteratureDiscipline,
+): LiteratureWikiFormalResultPage {
+  return {
+    schemaVersion: "kaivu-literature-wiki-page-v1",
+    discipline,
+    kind: "formal_result",
+    pageKey: update.pageKey,
+    title: update.title,
+    summary: update.rationale,
+    tags: dedupe(["formal_result", "literature", digest.schemaFamily, update.priority]),
+    aliases: [],
+    sourcePaperKeys: [digest.canonicalPaperKey],
+    updatedAt,
+    domainScope: inferPaperDomainScope(digest),
+    formalResultType: inferFormalResultType(update),
+    statement: update.patchOutline[0] || update.rationale || update.title,
+    assumptions: dedupe([
+      ...digest.specialized.theoreticalOrMathematical.assumptions,
+      ...digest.limitations,
+      ...digest.uncertainty,
+    ]).slice(0, 10),
+    proofIdea: dedupe([
+      ...digest.specialized.theoreticalOrMathematical.proofStrategy,
+      digest.approach,
+    ])[0] ?? digest.approach,
+    dependsOnResultKeys: plan.pageUpdates
+      .filter((item) => item.pageKind === "formal_result" && item.pageKey !== update.pageKey)
+      .map((item) => item.pageKey),
+    supportsClaimKeys: plan.claimUpdates.map((item) => item.claimKey),
+    relatedMethodKeys: plan.pageUpdates
+      .filter((item) => item.pageKind === "method")
+      .map((item) => item.pageKey),
+    limitations: dedupe([
+      ...digest.specialized.theoreticalOrMathematical.scopeOfApplicability,
+      ...digest.limitations,
+      ...digest.uncertainty,
+    ]).slice(0, 10),
+    relatedPageKeys: relatedPlanPageKeys(plan, update.pageKey),
+  };
+}
+
+function relatedPlanPageKeys(plan: PaperIngestPlan, currentPageKey: string): string[] {
+  return dedupe([
+    plan.paperKey,
+    ...plan.claimUpdates.map((item) => item.claimKey),
+    ...plan.topicUpdates.map((item) => item.topicKey),
+    ...plan.pageUpdates
+      .filter((item) => item.pageKey !== currentPageKey)
+      .map((item) => item.pageKey),
+  ]);
+}
+
+function inferFormalResultType(
+  update: PaperIngestPlan["pageUpdates"][number],
+): LiteratureWikiFormalResultPage["formalResultType"] {
+  const text = `${update.title} ${update.rationale} ${update.patchOutline.join(" ")}`.toLowerCase();
+  if (/\btheorem\b/u.test(text)) return "theorem";
+  if (/\blemma\b/u.test(text)) return "lemma";
+  if (/\bcorollary\b/u.test(text)) return "corollary";
+  if (/\bproposition\b/u.test(text)) return "proposition";
+  if (/\bconjecture\b/u.test(text)) return "conjecture";
+  if (/\bbound\b|\blower bound\b|\bupper bound\b/u.test(text)) return "bound";
+  if (/\bguarantee\b|\bguarantees\b/u.test(text)) return "guarantee";
+  return "other";
 }
 
 function buildClaimPage(
@@ -1058,11 +1926,70 @@ function buildClaimPage(
     contradictPaperKeys: claim.effect === "contradicts" ? [digest.canonicalPaperKey] : [],
     qualifyPaperKeys: claim.effect === "qualifies" ? [digest.canonicalPaperKey] : [],
     topicPageKeys: plan.topicUpdates
-      .filter((topic) => topic.topicThreads.some((item) => containsLoose(item, claim.claimText)) || containsLoose(topic.rationale, claim.claimText))
+      .filter((topic) => isClaimRelatedToTopic(claim, topic))
       .map((topic) => topic.topicKey),
     contradictions: buildClaimContradictions(claim),
     tensions: buildClaimTensions(claim),
     notes: claim.evidenceNotes,
+  };
+}
+
+function buildMethodPage(
+  digest: PaperDigest,
+  plan: PaperIngestPlan,
+  update: PaperIngestPlan["pageUpdates"][number],
+  updatedAt: string,
+  discipline: LiteratureDiscipline,
+): LiteratureWikiMethodPage | null {
+  if (update.pageKind !== "method") return null;
+  const outline = update.patchOutline;
+  return {
+    schemaVersion: "kaivu-literature-wiki-page-v1",
+    discipline,
+    kind: "method",
+    pageKey: update.pageKey,
+    title: update.title,
+    summary: update.rationale,
+    tags: dedupe(["method", "literature", digest.schemaFamily, update.priority]),
+    aliases: [],
+    sourcePaperKeys: [digest.canonicalPaperKey],
+    updatedAt,
+    domainScope: inferPaperDomainScope(digest),
+    methodStatement: outline[0] || update.rationale || update.title,
+    mechanism: dedupe([
+      ...outline.slice(1),
+      digest.approach,
+      ...digest.keyContributions,
+    ]).slice(0, 8),
+    assumptions: dedupe([
+      ...digest.limitations,
+      ...digest.uncertainty,
+    ]).slice(0, 8),
+    inputs: dedupe(digest.importantTerms.filter((term) => /data|input|context|prompt|sample|source|dataset/i.test(term))).slice(0, 8),
+    outputs: dedupe(digest.importantTerms.filter((term) => /output|prediction|answer|score|embedding|proof|result/i.test(term))).slice(0, 8),
+    variants: dedupe(digest.relatedWorkSignals.competingApproaches).slice(0, 8),
+    baselines: dedupe(digest.relatedWorkSignals.namedPriorWork).slice(0, 8),
+    failureModes: dedupe([
+      ...digest.limitations,
+      ...digest.uncertainty,
+    ]).slice(0, 8),
+    relatedBenchmarkKeys: plan.pageUpdates
+      .filter((item) => item.pageKind === "benchmark")
+      .map((item) => item.pageKey),
+    relatedFindingKeys: plan.pageUpdates
+      .filter((item) => item.pageKind === "finding")
+      .map((item) => item.pageKey),
+    relatedFormalResultKeys: plan.pageUpdates
+      .filter((item) => item.pageKind === "formal_result")
+      .map((item) => item.pageKey),
+    relatedPageKeys: dedupe([
+      plan.paperKey,
+      ...plan.claimUpdates.map((item) => item.claimKey),
+      ...plan.topicUpdates.map((item) => item.topicKey),
+      ...plan.pageUpdates
+        .filter((item) => item.pageKey !== update.pageKey)
+        .map((item) => item.pageKey),
+    ]),
   };
 }
 
@@ -1097,7 +2024,7 @@ function buildTopicPage(
         .map((item) => item.pageKey),
       ]),
     claimPageKeys: plan.claimUpdates
-      .filter((claim) => containsLoose(topic.rationale, claim.claimText) || topic.topicThreads.some((item) => containsLoose(item, claim.claimText)))
+      .filter((claim) => isClaimRelatedToTopic(claim, topic))
       .map((claim) => claim.claimKey),
     openTensions: buildTopicOpenTensions(plan, topic, digest),
     openQuestions: digest.uncertainty,
@@ -1161,10 +2088,7 @@ function buildTopicOpenTensions(
   topic: PaperIngestPlan["topicUpdates"][number],
   digest: PaperDigest,
 ): string[] {
-  const relatedClaims = plan.claimUpdates.filter((claim) => (
-    containsLoose(topic.rationale, claim.claimText)
-      || topic.topicThreads.some((item) => containsLoose(item, claim.claimText))
-  ));
+  const relatedClaims = plan.claimUpdates.filter((claim) => isClaimRelatedToTopic(claim, topic));
   const lines = dedupe([
     ...relatedClaims
       .filter((claim) => claim.effect === "contradicts")
@@ -1220,23 +2144,34 @@ function buildClaimTensionsFromEvidence(
   return dedupe(lines);
 }
 
-function collectSynthesisContradictionsFromClaimKeys(claimPageKeys: string[]): string[] {
-  return dedupe(
-    claimPageKeys.map((pageKey) => `[[${pageKey}]] contains an active contradiction or unresolved challenge that should stay visible in this synthesis.`),
-  ).slice(0, 8);
-}
-
-function collectSynthesisTensionsFromTopicPages(topicPages: LiteratureWikiTopicPage[]): string[] {
-  return dedupe([
-    ...topicPages.flatMap((page) => page.currentThreads),
-    ...topicPages.flatMap((page) => page.openQuestions),
-  ]).slice(0, 8);
-}
-
 function dedupePagesByKey(pages: LiteratureWikiPage[]): LiteratureWikiPage[] {
   const byKey = new Map<string, LiteratureWikiPage>();
-  for (const page of pages) byKey.set(`${page.kind}:${page.pageKey}`, page);
+  for (const page of pages) {
+    const key = pageIdentity(page);
+    const current = byKey.get(key);
+    byKey.set(key, current ? mergeLiteratureWikiPages(current, page) : page);
+  }
   return [...byKey.values()];
+}
+
+function pageIdentity(page: Pick<LiteratureWikiPage, "discipline" | "kind" | "pageKey">): string {
+  return `${page.discipline}:${page.kind}:${page.pageKey}`;
+}
+
+function paperDigestInputFromIngestInput(input: PaperIngestInput): PaperDigestInput {
+  return input.kind === "pdf_url"
+    ? {
+        kind: "pdf_url",
+        sourceId: input.sourceId,
+        pdfUrl: input.pdfUrl,
+        ...(input.disciplineHint ? { disciplineHint: input.disciplineHint } : {}),
+      }
+    : {
+        kind: "pdf_file",
+        sourceId: input.sourceId,
+        path: input.path,
+        ...(input.disciplineHint ? { disciplineHint: input.disciplineHint } : {}),
+      };
 }
 
 function dedupeByKey<T>(items: T[], keyFn: (item: T) => string): T[] {
@@ -1260,10 +2195,123 @@ function buildPaperIngestRetrieveQuery(digest: PaperDigest): string {
     .join(" | ");
 }
 
+function isPaperIngestWikiPageKind(kind: LiteratureWikiPage["kind"]): kind is PaperIngestWikiPageKind {
+  return true;
+}
+
+function isPaperIngestWikiPage(page: LiteratureWikiPage): page is LiteratureWikiPage & { kind: PaperIngestWikiPageKind } {
+  return isPaperIngestWikiPageKind(page.kind);
+}
+
+function buildExistingPageHint(page: LiteratureWikiPage & { kind: PaperIngestWikiPageKind }): PaperIngestExistingPageHint {
+  return {
+    pageKind: page.kind,
+    pageKey: page.pageKey,
+    title: page.title,
+    summary: page.summary,
+    sourcePaperKeys: page.sourcePaperKeys,
+    relatedPageKeys: dedupe(literatureWikiPageLinks(page)),
+    keyFacts: extractExistingPageHintFacts(page),
+  };
+}
+
+function extractExistingPageHintFacts(page: LiteratureWikiPage & { kind: PaperIngestWikiPageKind }): string[] {
+  switch (page.kind) {
+    case "paper":
+      return compactHintFacts([
+        `research problem: ${page.researchProblem}`,
+        `approach: ${page.approach}`,
+        ...page.keyClaims.map((claim) => `claim: ${claim}`),
+        ...page.findings.map((finding) => `finding: ${finding}`),
+        ...page.limitations.map((limitation) => `limitation: ${limitation}`),
+      ]);
+    case "research_question":
+      return compactHintFacts([
+        `question: ${page.question}`,
+        `current answer: ${page.currentAnswer}`,
+        ...page.openSubquestions.map((question) => `open subquestion: ${question}`),
+      ]);
+    case "method":
+      return compactHintFacts([
+        `method statement: ${page.methodStatement}`,
+        ...page.mechanism.map((item) => `mechanism: ${item}`),
+        ...page.assumptions.map((item) => `assumption: ${item}`),
+        ...page.failureModes.map((item) => `failure mode: ${item}`),
+      ]);
+    case "benchmark":
+      return compactHintFacts([
+        `benchmark statement: ${page.benchmarkStatement}`,
+        `dataset or suite: ${page.datasetOrSuite}`,
+        ...page.metrics.map((item) => `metric: ${item}`),
+        ...page.knownCaveats.map((item) => `caveat: ${item}`),
+      ]);
+    case "finding":
+      return compactHintFacts([
+        `finding: ${page.findingStatement}`,
+        `evidence type: ${page.evidenceType}`,
+        ...page.caveats.map((item) => `caveat: ${item}`),
+      ]);
+    case "formal_result":
+      return compactHintFacts([
+        `result type: ${page.formalResultType}`,
+        `statement: ${page.statement}`,
+        `proof idea: ${page.proofIdea}`,
+        ...page.assumptions.map((item) => `assumption: ${item}`),
+        ...page.limitations.map((item) => `limitation: ${item}`),
+      ]);
+    case "claim":
+      return compactHintFacts([
+        `claim: ${page.claimText}`,
+        `status: ${page.claimStatus}`,
+        ...page.contradictions.map((item) => `contradiction: ${item}`),
+        ...page.tensions.map((item) => `tension: ${item}`),
+        ...page.notes.map((item) => `note: ${item}`),
+      ]);
+    case "topic":
+      return compactHintFacts([
+        `topic statement: ${page.topicStatement}`,
+        ...page.currentThreads.map((item) => `thread: ${item}`),
+        ...page.openTensions.map((item) => `tension: ${item}`),
+        ...page.openQuestions.map((item) => `open question: ${item}`),
+      ]);
+    case "synthesis":
+      return compactHintFacts([
+        `synthesis statement: ${page.synthesisStatement}`,
+        `integrated takeaway: ${page.integratedTakeaway}`,
+        ...page.stateOfPlay.map((item) => `state of play: ${item}`),
+        ...page.tensions.map((item) => `tension: ${item}`),
+        ...page.openQuestions.map((item) => `open question: ${item}`),
+      ]);
+  }
+}
+
+function compactHintFacts(values: string[]): string[] {
+  return dedupe(values.map((value) => value.trim()).filter((value) => value.length > 0 && !value.endsWith(":"))).slice(0, 12);
+}
+
 function decidePaperIngestRetrieveMode(digest: PaperDigest): WikiRetrieveMode {
   if (digest.keyClaims.length > 0) return "claim_first";
   if (digest.researchProblem || digest.literatureReviewUse.searchTerms.length > 0) return "topic_first";
   return "landscape";
+}
+
+function buildNoopPaperIngestPlan(digest: PaperDigest): PaperIngestPlan {
+  return {
+    paperKey: digest.canonicalPaperKey,
+    paperTitle: digest.title,
+    schemaFamily: digest.schemaFamily,
+    ingestObjective: "Reuse the existing wiki compilation for this paper.",
+    summary: "This paper was already ingested into the literature wiki, so no new wiki write was needed.",
+    pageUpdates: [],
+    claimUpdates: [],
+    topicUpdates: [],
+    logEntry: {
+      title: `Reuse existing ingest for ${digest.title}`,
+      summary: "The literature wiki already contains a paper page for this canonical paper key.",
+      affectedPageKeys: [],
+      notes: [],
+    },
+  };
 }
 
 async function readExistingPage(path: string): Promise<LiteratureWikiPage | null> {
@@ -1288,6 +2336,70 @@ async function loadExistingWikiPages(root: string): Promise<LiteratureWikiPage[]
   } catch {
     return [];
   }
+}
+
+async function readPaperIngestManifest(root: string): Promise<Record<string, PaperIngestManifestRecord>> {
+  try {
+    const raw = await readFile(paperIngestManifestPath(root), "utf-8");
+    const parsed = JSON.parse(raw) as Partial<PersistedPaperIngestManifestFile>;
+    if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.records)) return {};
+    const index: Record<string, PaperIngestManifestRecord> = {};
+    for (const record of parsed.records) {
+      if (!isRecord(record)) continue;
+      const canonicalPaperKey = asString(record.canonicalPaperKey);
+      if (!canonicalPaperKey) continue;
+      index[canonicalPaperKey] = {
+        canonicalPaperKey,
+        pageFiles: asStringArray(record.pageFiles),
+        updatedAt: asString(record.updatedAt),
+      };
+    }
+    return index;
+  } catch {
+    return {};
+  }
+}
+
+async function persistPaperIngestManifest(root: string, lookupIndex: LiteratureWikiLookupIndex): Promise<void> {
+  const existing = await readPaperIngestManifest(root);
+  const updatedAt = new Date().toISOString();
+  for (const [canonicalPaperKey, pages] of Object.entries(lookupIndex)) {
+    existing[canonicalPaperKey] = {
+      canonicalPaperKey,
+      pageFiles: dedupe(
+        pages.map((page) =>
+          relative(root, literatureWikiPagePath(root, page.discipline, page.kind, page.pageKey)).replace(/\\/g, "/"),
+        ),
+      ),
+      updatedAt,
+    };
+  }
+  const records = Object.values(existing).sort((left, right) => left.canonicalPaperKey.localeCompare(right.canonicalPaperKey));
+  await writeFile(
+    paperIngestManifestPath(root),
+    JSON.stringify({
+      schemaVersion: 1,
+      updatedAt,
+      records,
+    } satisfies PersistedPaperIngestManifestFile, null, 2),
+    "utf-8",
+  );
+}
+
+async function loadPagesFromIngestManifestRecord(
+  root: string,
+  record: PaperIngestManifestRecord,
+): Promise<LiteratureWikiPage[]> {
+  const pages: LiteratureWikiPage[] = [];
+  for (const relativePath of record.pageFiles) {
+    const page = await readExistingPage(join(root, relativePath));
+    if (page) pages.push(page);
+  }
+  return pages;
+}
+
+function paperIngestManifestPath(root: string): string {
+  return join(root, "paper-ingest.manifest.json");
 }
 
 async function collectMarkdownFiles(root: string): Promise<string[]> {
@@ -1363,20 +2475,80 @@ function mergeLiteratureWikiPages(existing: LiteratureWikiPage, incoming: Litera
         notes,
       };
     }
-    case "author":
-    case "concept":
-    case "method":
-    case "task":
-    case "evidence_source":
-    case "evaluation_setup":
-    case "measure":
+    case "research_question":
       return {
         ...base,
         kind: incoming.kind,
-        statement: preferLonger(existing.kind === incoming.kind ? existing.statement : "", incoming.statement),
-        rationale: preferLonger(existing.kind === incoming.kind ? existing.rationale : "", incoming.rationale),
-        relatedPageKeys: dedupe([...(existing.kind === incoming.kind ? existing.relatedPageKeys : []), ...incoming.relatedPageKeys]),
-        patchOutline: dedupe([...(existing.kind === incoming.kind ? existing.patchOutline : []), ...incoming.patchOutline]),
+        question: preferLonger(existing.kind === "research_question" ? existing.question : "", incoming.question),
+        motivation: preferLonger(existing.kind === "research_question" ? existing.motivation : "", incoming.motivation),
+        currentAnswer: preferLonger(existing.kind === "research_question" ? existing.currentAnswer : "", incoming.currentAnswer),
+        relatedTopicKeys: dedupe([...(existing.kind === "research_question" ? existing.relatedTopicKeys : []), ...incoming.relatedTopicKeys]),
+        claimPageKeys: dedupe([...(existing.kind === "research_question" ? existing.claimPageKeys : []), ...incoming.claimPageKeys]),
+        findingPageKeys: dedupe([...(existing.kind === "research_question" ? existing.findingPageKeys : []), ...incoming.findingPageKeys]),
+        methodPageKeys: dedupe([...(existing.kind === "research_question" ? existing.methodPageKeys : []), ...incoming.methodPageKeys]),
+        benchmarkKeys: dedupe([...(existing.kind === "research_question" ? existing.benchmarkKeys : []), ...incoming.benchmarkKeys]),
+        openSubquestions: dedupe([...(existing.kind === "research_question" ? existing.openSubquestions : []), ...incoming.openSubquestions]),
+        relatedPageKeys: dedupe([...(existing.kind === "research_question" ? existing.relatedPageKeys : []), ...incoming.relatedPageKeys]),
+      };
+    case "benchmark":
+      return {
+        ...base,
+        kind: incoming.kind,
+        benchmarkStatement: preferLonger(existing.kind === "benchmark" ? existing.benchmarkStatement : "", incoming.benchmarkStatement),
+        evaluates: dedupe([...(existing.kind === "benchmark" ? existing.evaluates : []), ...incoming.evaluates]),
+        datasetOrSuite: preferLonger(existing.kind === "benchmark" ? existing.datasetOrSuite : "", incoming.datasetOrSuite),
+        metrics: dedupe([...(existing.kind === "benchmark" ? existing.metrics : []), ...incoming.metrics]),
+        knownCaveats: dedupe([...(existing.kind === "benchmark" ? existing.knownCaveats : []), ...incoming.knownCaveats]),
+        usedByPaperKeys: dedupe([...(existing.kind === "benchmark" ? existing.usedByPaperKeys : []), ...incoming.usedByPaperKeys]),
+        relatedMethodKeys: dedupe([...(existing.kind === "benchmark" ? existing.relatedMethodKeys : []), ...incoming.relatedMethodKeys]),
+        relatedFindingKeys: dedupe([...(existing.kind === "benchmark" ? existing.relatedFindingKeys : []), ...incoming.relatedFindingKeys]),
+        relatedPageKeys: dedupe([...(existing.kind === "benchmark" ? existing.relatedPageKeys : []), ...incoming.relatedPageKeys]),
+      };
+    case "finding":
+      return {
+        ...base,
+        kind: incoming.kind,
+        findingStatement: preferLonger(existing.kind === "finding" ? existing.findingStatement : "", incoming.findingStatement),
+        evidenceType: preferLonger(existing.kind === "finding" ? existing.evidenceType : "", incoming.evidenceType),
+        supportingPaperKeys: dedupe([...(existing.kind === "finding" ? existing.supportingPaperKeys : []), ...incoming.supportingPaperKeys]),
+        relatedMethodKeys: dedupe([...(existing.kind === "finding" ? existing.relatedMethodKeys : []), ...incoming.relatedMethodKeys]),
+        relatedBenchmarkKeys: dedupe([...(existing.kind === "finding" ? existing.relatedBenchmarkKeys : []), ...incoming.relatedBenchmarkKeys]),
+        supportsClaimKeys: dedupe([...(existing.kind === "finding" ? existing.supportsClaimKeys : []), ...incoming.supportsClaimKeys]),
+        qualifiesClaimKeys: dedupe([...(existing.kind === "finding" ? existing.qualifiesClaimKeys : []), ...incoming.qualifiesClaimKeys]),
+        contradictsClaimKeys: dedupe([...(existing.kind === "finding" ? existing.contradictsClaimKeys : []), ...incoming.contradictsClaimKeys]),
+        caveats: dedupe([...(existing.kind === "finding" ? existing.caveats : []), ...incoming.caveats]),
+        relatedPageKeys: dedupe([...(existing.kind === "finding" ? existing.relatedPageKeys : []), ...incoming.relatedPageKeys]),
+      };
+    case "formal_result":
+      return {
+        ...base,
+        kind: incoming.kind,
+        formalResultType: incoming.formalResultType,
+        statement: preferLonger(existing.kind === "formal_result" ? existing.statement : "", incoming.statement),
+        assumptions: dedupe([...(existing.kind === "formal_result" ? existing.assumptions : []), ...incoming.assumptions]),
+        proofIdea: preferLonger(existing.kind === "formal_result" ? existing.proofIdea : "", incoming.proofIdea),
+        dependsOnResultKeys: dedupe([...(existing.kind === "formal_result" ? existing.dependsOnResultKeys : []), ...incoming.dependsOnResultKeys]),
+        supportsClaimKeys: dedupe([...(existing.kind === "formal_result" ? existing.supportsClaimKeys : []), ...incoming.supportsClaimKeys]),
+        relatedMethodKeys: dedupe([...(existing.kind === "formal_result" ? existing.relatedMethodKeys : []), ...incoming.relatedMethodKeys]),
+        limitations: dedupe([...(existing.kind === "formal_result" ? existing.limitations : []), ...incoming.limitations]),
+        relatedPageKeys: dedupe([...(existing.kind === "formal_result" ? existing.relatedPageKeys : []), ...incoming.relatedPageKeys]),
+      };
+    case "method":
+      return {
+        ...base,
+        kind: incoming.kind,
+        methodStatement: preferLonger(existing.kind === "method" ? existing.methodStatement : "", incoming.methodStatement),
+        mechanism: dedupe([...(existing.kind === "method" ? existing.mechanism : []), ...incoming.mechanism]),
+        assumptions: dedupe([...(existing.kind === "method" ? existing.assumptions : []), ...incoming.assumptions]),
+        inputs: dedupe([...(existing.kind === "method" ? existing.inputs : []), ...incoming.inputs]),
+        outputs: dedupe([...(existing.kind === "method" ? existing.outputs : []), ...incoming.outputs]),
+        variants: dedupe([...(existing.kind === "method" ? existing.variants : []), ...incoming.variants]),
+        baselines: dedupe([...(existing.kind === "method" ? existing.baselines : []), ...incoming.baselines]),
+        failureModes: dedupe([...(existing.kind === "method" ? existing.failureModes : []), ...incoming.failureModes]),
+        relatedBenchmarkKeys: dedupe([...(existing.kind === "method" ? existing.relatedBenchmarkKeys : []), ...incoming.relatedBenchmarkKeys]),
+        relatedFindingKeys: dedupe([...(existing.kind === "method" ? existing.relatedFindingKeys : []), ...incoming.relatedFindingKeys]),
+        relatedFormalResultKeys: dedupe([...(existing.kind === "method" ? existing.relatedFormalResultKeys : []), ...incoming.relatedFormalResultKeys]),
+        relatedPageKeys: dedupe([...(existing.kind === "method" ? existing.relatedPageKeys : []), ...incoming.relatedPageKeys]),
       };
     case "topic":
       return {
@@ -1405,8 +2577,6 @@ function mergeLiteratureWikiPages(existing: LiteratureWikiPage, incoming: Litera
         tensions: dedupe([...(existing.kind === "synthesis" ? existing.tensions : []), ...incoming.tensions]),
         openQuestions: dedupe([...(existing.kind === "synthesis" ? existing.openQuestions : []), ...incoming.openQuestions]),
       };
-    case "overview":
-      return incoming;
   }
 }
 
@@ -1447,13 +2617,8 @@ function preferLonger(left: string, right: string): string {
   return right.length >= left.length ? right : left;
 }
 
-function renderLiteratureWikiIndex(pages: LiteratureWikiPage[]): string {
+export function renderLiteratureWikiIndex(pages: LiteratureWikiPage[]): string {
   const grouped = new Map<string, LiteratureWikiPage[]>();
-  const overviewPages = pages
-    .filter((page): page is LiteratureWikiOverviewPage => page.kind === "overview")
-    .sort((left, right) => left.title.localeCompare(right.title));
-  const globalOverview = overviewPages.find((page) => page.pageKey === "literature_overview");
-  const disciplineOverviews = overviewPages.filter((page) => page.pageKey !== "literature_overview");
   const categoryGroups: Array<{
     title: string;
     description: string;
@@ -1461,9 +2626,8 @@ function renderLiteratureWikiIndex(pages: LiteratureWikiPage[]): string {
   }> = [
     {
       title: "Entry Points",
-      description: "Top-level pages to read first when orienting to the wiki.",
+      description: "Synthesis and topic pages to read first when orienting to the wiki.",
       kinds: [
-        { kind: "overview", title: "Overview" },
         { kind: "synthesis", title: "Syntheses" },
         { kind: "topic", title: "Topics" },
       ],
@@ -1472,7 +2636,10 @@ function renderLiteratureWikiIndex(pages: LiteratureWikiPage[]): string {
       title: "Claims And Debates",
       description: "Claim pages and other debate-oriented views that track where evidence supports, qualifies, or contradicts current understanding.",
       kinds: [
+        { kind: "research_question", title: "Research Questions" },
         { kind: "claim", title: "Claims" },
+        { kind: "finding", title: "Findings" },
+        { kind: "formal_result", title: "Formal Results" },
       ],
     },
     {
@@ -1483,16 +2650,11 @@ function renderLiteratureWikiIndex(pages: LiteratureWikiPage[]): string {
       ],
     },
     {
-      title: "Concepts And Entities",
-      description: "Cross-source reference pages for recurring concepts, methods, tasks, resources, and evaluation objects.",
+      title: "Methods And Evaluation",
+      description: "Cross-source reference pages for methods, benchmarks, and other reusable evaluation objects.",
       kinds: [
-        { kind: "concept", title: "Concepts" },
-        { kind: "author", title: "Authors" },
         { kind: "method", title: "Methods" },
-        { kind: "task", title: "Tasks" },
-        { kind: "evidence_source", title: "Evidence Sources" },
-        { kind: "evaluation_setup", title: "Evaluation Setups" },
-        { kind: "measure", title: "Measures" },
+        { kind: "benchmark", title: "Benchmarks" },
       ],
     },
   ];
@@ -1506,29 +2668,15 @@ function renderLiteratureWikiIndex(pages: LiteratureWikiPage[]): string {
     "",
     "This index is the content-oriented catalog for the literature wiki. Start here to find relevant pages, then drill into them.",
     "",
-    "Suggested reading order: start with `Overview`, then scan `Syntheses` and `Topics`, then drill into `Claims`, `Papers`, and the relevant concept/entity pages.",
+    "Suggested reading order: start with `Research Questions`, `Syntheses`, and `Topics`, then drill into `Claims`, `Findings`, `Papers`, `Methods`, and `Benchmarks`.",
     "",
     "## Navigation Layers",
     "",
-    "- [[overview/literature_overview]]: top-level executive summary of the wiki",
     "- [[indexes/by-page-kind]]: sub-index entry point for page-kind folders",
     "- [[indexes/by-discipline]]: top-level navigation by discipline",
     "- [[log]]: chronological timeline of ingests and maintenance passes",
     "- [[hot]]: recent-context cache for the newest active threads",
   ];
-
-  if (globalOverview || disciplineOverviews.length > 0) {
-    lines.push("", "## Overview Layers", "");
-    if (globalOverview) {
-      lines.push(`- Global overview: [[${globalOverview.pageKey}]] - ${globalOverview.summary}`);
-    }
-    if (disciplineOverviews.length > 0) {
-      lines.push("- Discipline overviews:");
-      for (const overview of disciplineOverviews) {
-        lines.push(`  - [[${overview.pageKey}]] (\`${overview.discipline}\`): ${overview.summary}`);
-      }
-    }
-  }
 
   for (const group of categoryGroups) {
     const groupItems = group.kinds.flatMap((category) => grouped.get(category.kind) ?? []);
@@ -1553,12 +2701,20 @@ function renderLiteratureWikiIndex(pages: LiteratureWikiPage[]): string {
   return `${lines.join("\n")}\n`;
 }
 
-async function writeLiteratureWikiSubIndexes(root: string, pages: LiteratureWikiPage[]): Promise<string[]> {
+async function writeLiteratureWikiSubIndexes(
+  root: string,
+  pages: LiteratureWikiPage[],
+  changedPages: LiteratureWikiPage[],
+): Promise<string[]> {
   const written: string[] = [];
+  const changedDisciplines = new Set(changedPages.map((page) => page.discipline));
+  const changedFolderKeys = new Set(changedPages.map((page) => `${page.discipline}:${page.kind}`));
   for (const discipline of disciplineOrder()) {
+    if (!changedDisciplines.has(discipline)) continue;
     const disciplinePages = pages.filter((page) => page.discipline === discipline);
     if (disciplinePages.length === 0) continue;
     for (const kind of pageKindOrder()) {
+      if (!changedFolderKeys.has(`${discipline}:${kind}`)) continue;
       const kindPages = disciplinePages.filter((page) => page.kind === kind);
       if (kindPages.length === 0) continue;
       const directory = join(root, literatureWikiPageDirectory(discipline, kind));
@@ -1580,6 +2736,7 @@ async function writeLiteratureWikiSubIndexes(root: string, pages: LiteratureWiki
   written.push(disciplineIndexPath);
 
   for (const discipline of disciplineOrder()) {
+    if (!changedDisciplines.has(discipline)) continue;
     const disciplinePages = pages.filter((page) => page.discipline === discipline);
     if (disciplinePages.length === 0) continue;
     const disciplineDetailPath = join(root, discipline, "_index.md");
@@ -1622,18 +2779,15 @@ function renderLiteratureWikiFolderIndex(
 
 function renderLiteratureWikiByPageKindIndex(pages: LiteratureWikiPage[]): string {
   const kinds: Array<LiteratureWikiPage["kind"]> = [
-    "overview",
     "paper",
+    "research_question",
     "claim",
+    "finding",
+    "formal_result",
     "topic",
     "synthesis",
-    "author",
-    "concept",
     "method",
-    "task",
-    "evidence_source",
-    "evaluation_setup",
-    "measure",
+    "benchmark",
   ];
   const lines = [
     "# By Page Kind",
@@ -1673,14 +2827,9 @@ function renderLiteratureWikiDisciplineIndex(pages: LiteratureWikiPage[]): strin
       .filter((page) => page.discipline === discipline)
       .sort((left, right) => left.title.localeCompare(right.title));
     if (disciplinePages.length === 0) continue;
-    const overview = disciplinePages.find((page) => page.kind === "overview");
     lines.push("", `## ${disciplineLabel(discipline)}`, "", `- Detail index: [[${discipline}/_index]]`);
-    if (overview) {
-      lines.push(`- Overview: [[${overview.pageKey}]]`);
-    }
     lines.push("");
     for (const page of disciplinePages) {
-      if (page.kind === "overview") continue;
       lines.push(`- [[${page.pageKey}]] (\`${page.kind}\`): ${page.summary}`);
     }
   }
@@ -1704,26 +2853,16 @@ function renderLiteratureWikiDisciplineDetailIndex(
     "See also: [[index]], [[indexes/by-discipline]], [[indexes/by-page-kind]]",
   ];
 
-  const overviewPages = (grouped.get("overview") ?? []).sort((left, right) => left.title.localeCompare(right.title));
-  if (overviewPages.length > 0) {
-    lines.push("", "## Overview", "");
-    for (const page of overviewPages) {
-      lines.push(`- [[${page.pageKey}]]: ${page.summary}`);
-    }
-  }
-
   for (const kind of [
     "paper",
+    "research_question",
     "claim",
+    "finding",
+    "formal_result",
     "topic",
     "synthesis",
-    "author",
-    "concept",
     "method",
-    "task",
-    "evidence_source",
-    "evaluation_setup",
-    "measure",
+    "benchmark",
   ] satisfies Array<LiteratureWikiPage["kind"]>) {
     const kindPages = (grouped.get(kind) ?? []).sort((left, right) => left.title.localeCompare(right.title));
     if (kindPages.length === 0) continue;
@@ -1740,20 +2879,16 @@ function renderLiteratureWikiLogEntry(
   digest: PaperDigest,
   plan: PaperIngestPlan,
   writtenPages: LiteratureWikiPage[],
-  overviewPage: LiteratureWikiOverviewPage,
 ): string {
   const now = new Date().toISOString();
   const dateLabel = now.slice(0, 10);
   const affectedPageKeys = dedupe([
     ...writtenPages.map((page) => page.pageKey),
-    overviewPage.pageKey,
   ]);
   const changes = dedupe([
     ...plan.pageUpdates.map((item) => `${item.action} ${item.pageKind}:${item.pageKey}`),
     ...plan.claimUpdates.map((item) => `${item.action} claim:${item.claimKey} (${item.effect})`),
     ...plan.topicUpdates.map((item) => `${item.action} topic:${item.topicKey}`),
-    ...plan.authorUpdates.map((item) => `${item.action} author:${item.authorKey}`),
-    "update overview:literature_overview",
     "update index:index",
   ]);
   const lines = [
@@ -1828,7 +2963,6 @@ function renderLiteratureWikiHotCache(
 
 function renderLiteratureWikiBatchLogEntry(
   prepared: PreparedPaperIngest[],
-  overviewPage: LiteratureWikiOverviewPage,
   crossReference: BatchCrossReferenceResult,
 ): string {
   const now = new Date().toISOString();
@@ -1836,14 +2970,13 @@ function renderLiteratureWikiBatchLogEntry(
   const paperTitles = prepared.map((item) => item.digest.title).filter(Boolean);
   const affectedPageKeys = dedupe([
     ...prepared.flatMap((item) => item.pages.map((page) => page.pageKey)),
-    overviewPage.pageKey,
+    ...crossReference.pages.map((page) => page.pageKey),
   ]);
   const createdOrUpdated = dedupe([
     ...prepared.flatMap((item) => item.plan.pageUpdates.map((update) => `${update.action} ${update.pageKind}:${update.pageKey}`)),
     ...prepared.flatMap((item) => item.plan.claimUpdates.map((claim) => `${claim.action} claim:${claim.claimKey} (${claim.effect})`)),
     ...prepared.flatMap((item) => item.plan.topicUpdates.map((topic) => `${topic.action} topic:${topic.topicKey}`)),
-    ...prepared.flatMap((item) => item.plan.authorUpdates.map((author) => `${author.action} author:${author.authorKey}`)),
-    "update overview:literature_overview",
+    ...crossReference.pages.map((page) => `cross-reference ${page.kind}:${page.pageKey}`),
     "update index:index",
     "update hot:hot",
   ]);
@@ -2004,39 +3137,6 @@ function renderDisciplineLiteratureWikiHotCache(
   return `${lines.join("\n")}\n`;
 }
 
-function buildOverviewPages(pages: LiteratureWikiPage[]): LiteratureWikiOverviewPage[] {
-  const overviewPages: LiteratureWikiOverviewPage[] = [
-    buildLiteratureWikiOverviewPage(pages, new Date().toISOString(), {
-      discipline: "general_science",
-      pageKey: "literature_overview",
-      title: "Literature Overview",
-      summary: "Executive summary of the full literature wiki across disciplines.",
-      aliases: ["literature_index", "wiki_overview"],
-    }),
-  ];
-
-  const concreteDisciplines = dedupe(pages.map((page) => page.discipline))
-    .filter((discipline): discipline is LiteratureDiscipline =>
-      discipline !== "general_science" && discipline !== "unknown",
-    );
-
-  for (const discipline of concreteDisciplines) {
-    const disciplinePages = pages.filter((page) => page.discipline === discipline);
-    if (disciplinePages.length === 0) continue;
-    overviewPages.push(
-      buildLiteratureWikiOverviewPage(disciplinePages, new Date().toISOString(), {
-        discipline,
-        pageKey: `${discipline}_literature_overview`,
-        title: `${disciplineLabel(discipline)} Literature Overview`,
-        summary: `Executive summary of the ${disciplineLabel(discipline).toLowerCase()} portion of the literature wiki.`,
-        aliases: [],
-      }),
-    );
-  }
-
-  return overviewPages;
-}
-
 function normalizeEnum<T extends string>(value: string, allowed: readonly T[], fallback: T): T {
   return allowed.includes(value as T) ? value as T : fallback;
 }
@@ -2045,20 +3145,16 @@ function kindLabelFromIngestPageKind(kind: PaperIngestWikiPageKind): string {
   switch (kind) {
     case "paper":
       return "Papers";
-    case "author":
-      return "Authors";
-    case "concept":
-      return "Concepts";
+    case "research_question":
+      return "Research Questions";
     case "method":
       return "Methods";
-    case "task":
-      return "Tasks";
-    case "evidence_source":
-      return "Evidence Sources";
-    case "evaluation_setup":
-      return "Evaluation Setups";
-    case "measure":
-      return "Measures";
+    case "benchmark":
+      return "Benchmarks";
+    case "finding":
+      return "Findings";
+    case "formal_result":
+      return "Formal Results";
     case "claim":
       return "Claims";
     case "topic":
@@ -2072,45 +3168,36 @@ function kindLabel(kind: LiteratureWikiPage["kind"]): string {
   switch (kind) {
     case "paper":
       return "Papers";
-    case "author":
-      return "Authors";
-    case "concept":
-      return "Concepts";
+    case "research_question":
+      return "Research Questions";
     case "method":
       return "Methods";
-    case "task":
-      return "Tasks";
-    case "evidence_source":
-      return "Evidence Sources";
-    case "evaluation_setup":
-      return "Evaluation Setups";
-    case "measure":
-      return "Measures";
+    case "benchmark":
+      return "Benchmarks";
+    case "finding":
+      return "Findings";
+    case "formal_result":
+      return "Formal Results";
     case "claim":
       return "Claims";
     case "topic":
       return "Topics";
     case "synthesis":
       return "Syntheses";
-    case "overview":
-      return "Overview";
   }
 }
 
 function pageKindOrder(): Array<LiteratureWikiPage["kind"]> {
   return [
-    "overview",
     "paper",
+    "research_question",
     "claim",
+    "finding",
+    "formal_result",
     "topic",
     "synthesis",
-    "author",
-    "concept",
     "method",
-    "task",
-    "evidence_source",
-    "evaluation_setup",
-    "measure",
+    "benchmark",
   ];
 }
 
@@ -2118,14 +3205,20 @@ function folderIndexDescription(kind: LiteratureWikiPage["kind"]): string {
   switch (kind) {
     case "paper":
       return "Paper pages are the source anchors of the wiki. Each page captures one ingested paper and links outward to the claims, topics, and syntheses it affects.";
+    case "research_question":
+      return "Research question pages track explicit questions the literature is trying to answer, along with related papers, claims, findings, and open subquestions.";
     case "claim":
       return "Claim pages track debate positions, propositions, and judgments that can be supported, contradicted, or qualified by evidence.";
+    case "finding":
+      return "Finding pages track empirical, observational, or reported scientific findings grounded in source evidence.";
+    case "formal_result":
+      return "Formal result pages track theorems, lemmas, corollaries, propositions, bounds, guarantees, and conjectures.";
     case "topic":
       return "Topic pages organize areas of inquiry: scope, recurring threads, and open questions.";
+    case "benchmark":
+      return "Benchmark pages track datasets, benchmark suites, challenge sets, standardized evaluation resources, and their caveats.";
     case "synthesis":
       return "Synthesis pages maintain cross-paper integrated views, comparisons, and evolving takeaways.";
-    case "overview":
-      return "Overview pages serve as top-level executive summaries and reading entry points.";
     default:
       return `${kindLabel(kind)} pages are cross-source reference pages maintained by the literature wiki.`;
   }
@@ -2189,6 +3282,75 @@ function containsLoose(haystack: string, needle: string): boolean {
   const left = haystack.trim().toLowerCase();
   const right = needle.trim().toLowerCase();
   return Boolean(left && right) && (left.includes(right) || right.includes(left));
+}
+
+function isClaimRelatedToTopic(
+  claim: PaperIngestPlan["claimUpdates"][number],
+  topic: PaperIngestPlan["topicUpdates"][number],
+): boolean {
+  const topicText = [
+    topic.topicKey,
+    topic.title,
+    topic.rationale,
+    ...topic.topicThreads,
+  ].join(" ");
+  const claimText = [
+    claim.claimKey,
+    claim.claimText,
+    claim.rationale,
+    ...claim.evidenceNotes,
+  ].join(" ");
+  if (hasExplicitKeyReference(topicText, claim.claimKey) || hasExplicitKeyReference(claimText, topic.topicKey)) return true;
+  if (containsLoose(topicText, claim.claimText)) return true;
+
+  const topicTokens = significantTokens(topicText);
+  const claimTokens = significantTokens(claimText);
+  const shared = claimTokens.filter((token) => topicTokens.includes(token));
+  return shared.length >= 2;
+}
+
+function hasExplicitKeyReference(text: string, key: string): boolean {
+  const normalizedKey = key.trim().toLowerCase();
+  if (normalizedKey.length < 4) return false;
+  return containsLoose(text, normalizedKey);
+}
+
+function significantTokens(value: string): string[] {
+  const stopWords = new Set([
+    "about",
+    "after",
+    "also",
+    "between",
+    "claim",
+    "could",
+    "from",
+    "into",
+    "literature",
+    "method",
+    "paper",
+    "result",
+    "results",
+    "should",
+    "study",
+    "that",
+    "their",
+    "there",
+    "these",
+    "this",
+    "topic",
+    "using",
+    "when",
+    "where",
+    "which",
+    "with",
+  ]);
+  return dedupe(
+    value
+      .toLowerCase()
+      .split(/[^a-z0-9_]+/u)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 4 && !stopWords.has(token)),
+  );
 }
 
 function asString(value: unknown): string {
