@@ -1,4 +1,4 @@
 interface:
   display_name: "Problem Frame"
-  short_description: "Frame broad or ambiguous tasks"
-  default_prompt: "Frame this request into a structured problem before downstream work."
+  short_description: "Frame literature review requests"
+  default_prompt: "Frame this literature review request before downstream literature review."

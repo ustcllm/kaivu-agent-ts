@@ -1,6 +1,6 @@
 # Search Query Validation
 
-Use this reference to validate literature search queries before or after external paper search.
+Use this reference to validate literature search queries before or after external literature search.
 
 ## Workflow
 

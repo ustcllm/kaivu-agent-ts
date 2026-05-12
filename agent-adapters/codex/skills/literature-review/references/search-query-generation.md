@@ -1,6 +1,6 @@
 # Search Query Generation
 
-Use this reference to create external paper search queries. It prepares search; it does not execute search.
+Use this reference to create external literature search queries. It prepares search; it does not execute search.
 
 ## Workflow
 

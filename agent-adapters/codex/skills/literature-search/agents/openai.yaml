@@ -1,0 +1,4 @@
+interface:
+  display_name: "Literature Search"
+  short_description: "Search candidate literature"
+  default_prompt: "Search for relevant papers with rag_arxiv_retrieve and return a ranked shortlist."

@@ -31,6 +31,7 @@ Use this routing table:
 | Ingest one digested paper | Plan and materialize wiki pages | `paper-ingest` |
 | Ingest many papers | Batch orchestration | `paper-ingest-batch` |
 | Literature review discovery | Frame questions, generate/validate search queries, and find external papers | `literature-review` |
+| External literature search | Run `rag_arxiv_retrieve` and rank candidate papers | `literature-search` |
 | Summarize batch ingest | Literature-review style batch answer | `paper-ingest/references/batch-summary.md` |
 | Search the wiki | Build a relevant reading set | `paper-wiki-search` |
 | Ask the wiki a question | Retrieve and synthesize from wiki pages | `paper-wiki-query` |

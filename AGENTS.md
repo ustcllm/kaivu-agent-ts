@@ -14,7 +14,8 @@ Install one agent package at a time. For Codex, install the skill directories un
 ## General Research Skills
 
 - `problem-frame`: clarify broad or ambiguous requests before literature review, paper wiki work, hypothesis generation, experiment planning, or research-oriented implementation.
-- `literature-review`: frame research questions, generate and validate paper search queries, search external literature sources, and return ranked candidate papers.
+- `literature-review`: frame research questions, generate and validate literature search queries, search external literature sources, and return ranked candidate papers.
+- `literature-search`: run external literature search with `rag_arxiv_retrieve` and return candidate papers.
 
 ## Paper Literature Skills
 
@@ -24,6 +25,7 @@ Use these skills before modifying or operating the paper ingest pipeline:
 
 - `paper-wiki`: route digest, ingest, batch, query, lint, and save-like wiki operations.
 - `literature-review`: find external paper candidates before digest or ingest.
+- `literature-search`: retrieve external paper candidates with `rag_arxiv_retrieve`.
 - `paper-digest`: create or revise structured `PaperDigest` records from scientific papers.
 - `paper-ingest`: plan and materialize one structured `PaperDigest` into literature wiki pages.
 - `paper-ingest-batch`: orchestrate multi-paper digest, ingest, cross-reference, commit, and batch summary.
