@@ -1,4 +1,4 @@
 interface:
   display_name: "Problem Frame"
-  short_description: "Frame literature review requests"
-  default_prompt: "Frame this literature review request before downstream literature review."
+  short_description: "Frame or revise literature review requests"
+  default_prompt: "Frame this request before literature review."
